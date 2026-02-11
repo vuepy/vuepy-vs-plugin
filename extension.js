@@ -10,7 +10,7 @@ function activate(context) {
   const CACHE_DIR_IN_WORKSPACE = '.vue-py-cache';
   const TEMP_SUBDIR = 'vue-py-scripts';
 
-  /** 从 Vue 文档中解析 <script lang="py"> 块：{ content, startLine1Based } 或 null */
+  /** 从 Vue 文档中解析 <script lang="py"> 块：{ content, startLine1Based, startOffset, endOffset } 或 null */
   function getScriptPyBlock(text) {
     const re = /<script\s+[^>]*lang\s*=\s*["']py["'][^>]*>([\s\S]*?)<\/script>/i;
     const m = text.match(re);
@@ -18,7 +18,9 @@ function activate(context) {
     const content = m[1] || '';
     const contentStartIndex = m.index + m[0].indexOf('>') + 1;
     const startLine1Based = text.slice(0, contentStartIndex).split(/\r?\n/).length;
-    return { content, startLine1Based };
+    const startOffset = contentStartIndex;
+    const endOffset = contentStartIndex + content.length;
+    return { content, startLine1Based, startOffset, endOffset };
   }
 
   /** 判断 position 是否在 script py 块内 */
@@ -77,6 +79,28 @@ function activate(context) {
     return filePath;
   }
 
+  /** 获取/创建用于格式化的临时 .py 文件路径（不包在 setup 中，直接用原内容） */
+  function getTempPyPathForFormat(vueUri, rawContent) {
+    const folder = vscode.workspace.getWorkspaceFolder(vueUri);
+    const dir = folder
+      ? path.join(folder.uri.fsPath, CACHE_DIR_IN_WORKSPACE)
+      : path.join(context.globalStoragePath || require('os').tmpdir(), TEMP_SUBDIR);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (_) {}
+    const key = vueUri.toString() + ':fmt';
+    const hash = crypto.createHash('md5').update(key).digest('hex').slice(0, 8);
+    const baseName = path.basename(vueUri.fsPath, path.extname(vueUri.fsPath)) || 'vue';
+    const fileName = baseName + '-' + hash + '.py';
+    const filePath = path.join(dir, fileName);
+    try {
+      fs.writeFileSync(filePath, rawContent, 'utf8');
+    } catch (e) {
+      console.warn('[vue-py-highlight] write temp fmt file failed', e);
+    }
+    return filePath;
+  }
+
   /** 返回 { tempUri, tempPosition, block } 或 { block: null } */
   function getTempUriAndPosition(vueDocument, vuePosition) {
     const block = isInScriptPy(vueDocument, vuePosition);
@@ -100,6 +124,26 @@ function activate(context) {
     const startChar = tempCharToVueChar(tempRange.start.line, tempRange.start.character);
     const endChar = tempCharToVueChar(tempRange.end.line, tempRange.end.character);
     return new vscode.Range(startLine, startChar, endLine, endChar);
+  }
+
+  /** 在给定文本上按 TextEdit 应用格式化结果（使用原始 temp 文档的 offset 计算） */
+  function applyEditsToText(text, edits, tempDoc) {
+    if (!Array.isArray(edits) || !edits.length) {
+      return text;
+    }
+    // 按起始 offset 从后往前应用，避免影响后续位置
+    const sorted = edits.slice().sort((a, b) => {
+      const ao = tempDoc.offsetAt(a.range.start);
+      const bo = tempDoc.offsetAt(b.range.start);
+      return bo - ao;
+    });
+    let result = text;
+    for (const e of sorted) {
+      const start = tempDoc.offsetAt(e.range.start);
+      const end = tempDoc.offsetAt(e.range.end);
+      result = result.slice(0, start) + e.newText + result.slice(end);
+    }
+    return result;
   }
 
   /** 若 loc 指向临时文件，则映射回 Vue 的 document.uri 和 range */
@@ -363,6 +407,69 @@ function activate(context) {
           return baseSymbols.map(mapDocSymbol);
         }
         return [];
+      },
+    })
+  );
+
+  /** 使用 Python 格式化器（Pylance/black 等）格式化 <script lang="py"> 代码块（只替换内部内容，不改 <script> 标签） */
+  async function formatScriptBlock(document, options, _rangeOpt, _token) {
+    const text = document.getText();
+    const block = getScriptPyBlock(text);
+    if (!block) {
+      return [];
+    }
+    const tempPath = getTempPyPathForFormat(document.uri, block.content);
+    const tempUri = vscode.Uri.file(tempPath);
+    const tempDoc = await vscode.workspace.openTextDocument(tempUri);
+    const edits = await vscode.commands.executeCommand(
+      'vscode.executeFormatDocumentProvider',
+      tempUri,
+      options
+    );
+    if (!Array.isArray(edits) || edits.length === 0) {
+      return [];
+    }
+
+    // 在临时 Python 文档文本上按 TextEdit 计算出完整的格式化后内容
+    const formattedFull = applyEditsToText(tempDoc.getText(), edits, tempDoc);
+
+    // 标准化为：标签后换行一行，再是格式化后的代码，最后再换行一行
+    const trimmed = formattedFull.replace(/\s+$/u, '');
+    const newContent = '\n' + trimmed + '\n';
+
+    // 仅替换 <script lang="py"> 内部内容，不动前后的 <script> 标签
+    const startPos = document.positionAt(block.startOffset);
+    const endPos = document.positionAt(block.endOffset);
+    const vueRange = new vscode.Range(startPos, endPos);
+    return [new vscode.TextEdit(vueRange, newContent)];
+  }
+
+  /** 文档整体格式化：只对 <script lang=\"py\"> 部分调用 Python 格式化器 */
+  context.subscriptions.push(
+    vscode.languages.registerDocumentFormattingEditProvider([{ language: 'vue' }], {
+      async provideDocumentFormattingEdits(document, options, token) {
+        return formatScriptBlock(document, options, undefined, token);
+      },
+    })
+  );
+
+  /** 选区格式化：若选区与 script 重叠，同样按整个 script 块来格式化 */
+  context.subscriptions.push(
+    vscode.languages.registerDocumentRangeFormattingEditProvider([{ language: 'vue' }], {
+      async provideDocumentRangeFormattingEdits(document, range, options, token) {
+        const text = document.getText();
+        const block = getScriptPyBlock(text);
+        if (!block) {
+          return [];
+        }
+        const scriptStart = block.startLine1Based - 1;
+        const scriptLen = block.content.split(/\r?\n/).length;
+        const scriptEnd = scriptStart + scriptLen - 1;
+        // 若选区与 script 无交集，则不处理
+        if (range.end.line < scriptStart || range.start.line > scriptEnd) {
+          return [];
+        }
+        return formatScriptBlock(document, options, range, token);
       },
     })
   );
