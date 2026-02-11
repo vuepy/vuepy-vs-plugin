@@ -208,19 +208,80 @@ function activate(context) {
     })
   );
 
+  /** 在 template 中查找对 script 符号的引用（基于简单文本匹配） */
+  function findTemplateRefsForName(document, name, block) {
+    const text = document.getText();
+    const lines = text.split(/\r?\n/);
+    const scriptStart0 = block.startLine1Based - 1;
+    const scriptLen = block.content.split(/\r?\n/).length;
+    const scriptEnd0 = scriptStart0 + scriptLen - 1;
+
+    // 简单转义 name 中的正则特殊字符
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('\\b' + escaped + '\\b', 'g');
+
+    const locations = [];
+    for (let lineNo = 0; lineNo < lines.length; lineNo++) {
+      if (lineNo >= scriptStart0 && lineNo <= scriptEnd0) continue; // 跳过 script 区域
+      const line = lines[lineNo];
+      let m;
+      while ((m = re.exec(line)) !== null) {
+        const col = m.index;
+        const range = new vscode.Range(lineNo, col, lineNo, col + name.length);
+        locations.push(new vscode.Location(document.uri, range));
+      }
+    }
+    return locations;
+  }
+
   context.subscriptions.push(
     vscode.languages.registerReferenceProvider([{ language: 'vue' }], {
       async provideReferences(document, position, _refContext) {
-        const { tempUri, tempPosition, block } = getTempUriAndPosition(document, position);
-        if (!tempUri || !block) return null;
-        await ensureTempDocOpen(tempUri);
-        const refs = await vscode.commands.executeCommand(
-          'vscode.executeReferenceProvider',
-          tempUri,
-          tempPosition
-        );
-        if (!Array.isArray(refs) || refs.length === 0) return refs;
-        return refs.map((ref) => mapLocationToVue(ref, document, block, tempUri));
+        const inScript = isInScriptPy(document, position);
+
+        // 先尝试从 Pylance 获取 script 内部的引用
+        let scriptRefs = [];
+        let block = null;
+        if (inScript) {
+          const res = getTempUriAndPosition(document, position);
+          const { tempUri, tempPosition } = res;
+          block = res.block;
+          if (tempUri && block) {
+            await ensureTempDocOpen(tempUri);
+            const refs = await vscode.commands.executeCommand(
+              'vscode.executeReferenceProvider',
+              tempUri,
+              tempPosition
+            );
+            if (Array.isArray(refs) && refs.length) {
+              scriptRefs = refs.map((ref) => mapLocationToVue(ref, document, block, tempUri));
+            }
+          }
+        } else {
+          // 不在 script 中时，也需要 block 信息用于查 template 引用
+          block = getScriptPyBlock(document.getText());
+        }
+
+        if (!block) {
+          return scriptRefs.length ? scriptRefs : null;
+        }
+
+        // 基于当前光标处的名字，在 template 中做简单文本匹配，补充为引用位置
+        const wordRange = document.getWordRangeAtPosition(position);
+        if (!wordRange) {
+          return scriptRefs.length ? scriptRefs : null;
+        }
+        const name = document.getText(wordRange);
+        if (!name) {
+          return scriptRefs.length ? scriptRefs : null;
+        }
+
+        const templateRefs = findTemplateRefsForName(document, name, block);
+        if (!templateRefs.length) {
+          return scriptRefs.length ? scriptRefs : null;
+        }
+
+        return scriptRefs.concat(templateRefs);
       },
     })
   );
