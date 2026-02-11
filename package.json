@@ -1,0 +1,38 @@
+{
+  "name": "vuepy-highlight",
+  "displayName": "Vuepy Syntax Highlight",
+  "description": "Add Python syntax highlighting to Vue SFC script tags with lang='py'",
+  "version": "0.0.1",
+  "publisher": "vuepy-org",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "grammars": [
+      {
+        "scopeName": "vue.injections.python",
+        "path": "./syntaxes/vue-python.tmLanguage.json",
+        "injectTo": [
+          "source.vue",
+          "text.html.vue"
+        ],
+        "embeddedLanguages": {
+          "source.python": "python"
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "main": "extension.js",
+  "activationEvents": [
+    "onLanguage:vue"
+  ]
+}

@@ -1,0 +1,23 @@
+{
+    "scopeName": "vue.injections.python",
+    "injectionSelector": "L:source.vue -comment, L:text.html.vue -comment",
+    "patterns": [
+      {
+        "name": "meta.embedded.block.python.vue",
+        "contentName": "source.python",
+        "begin": "(<)(script)(?:\\s[^>]*)?\\s(lang)\\s*(=)\\s*['\"]py['\"][^>]*?(>)",
+        "beginCaptures": {
+          "0": { "name": "punctuation.definition.tag.begin.vue" }
+        },
+        "end": "(</)(script)(\\s*)(>)",
+        "endCaptures": {
+          "0": { "name": "punctuation.definition.tag.end.vue" }
+        },
+        "patterns": [
+          {
+            "include": "source.python"
+          }
+        ]
+      }
+    ]
+  }
