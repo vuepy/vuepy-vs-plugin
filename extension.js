@@ -126,20 +126,68 @@ function activate(context) {
     } catch (_) {}
   }
 
+  /** 从 template 中的标识符跳转到 script 里的定义（简单基于 Python 源码查找 def / 赋值行） */
+  function findDefsInScriptFromTemplate(document, position) {
+    const text = document.getText();
+    const block = getScriptPyBlock(text);
+    if (!block) return [];
+
+    const wordRange = document.getWordRangeAtPosition(position);
+    if (!wordRange) return [];
+    const name = document.getText(wordRange);
+    if (!name) return [];
+
+    const lines = block.content.split(/\r?\n/);
+    const results = [];
+    const defRe = new RegExp('^\\s*def\\s+' + name + '\\s*\\(');
+    const assignRe = new RegExp('^\\s*' + name + '\\s*=');
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let m = defRe.exec(line);
+      if (m) {
+        const col = m.index + m[0].indexOf(name);
+        const vueLine = block.startLine1Based - 1 + i;
+        const range = new vscode.Range(vueLine, col, vueLine, col + name.length);
+        results.push(new vscode.Location(document.uri, range));
+        continue;
+      }
+      m = assignRe.exec(line);
+      if (m) {
+        const col = m.index;
+        const vueLine = block.startLine1Based - 1 + i;
+        const range = new vscode.Range(vueLine, col, vueLine, col + name.length);
+        results.push(new vscode.Location(document.uri, range));
+      }
+    }
+    return results;
+  }
+
   context.subscriptions.push(
     vscode.languages.registerDefinitionProvider([{ language: 'vue' }], {
       async provideDefinition(document, position) {
-        const { tempUri, tempPosition, block } = getTempUriAndPosition(document, position);
-        if (!tempUri || !block) return null;
-        await ensureTempDocOpen(tempUri);
-        let locations = await vscode.commands.executeCommand(
-          'vscode.executeDefinitionProvider',
-          tempUri,
-          tempPosition
-        );
-        if (!locations) return undefined;
-        if (!Array.isArray(locations)) locations = [locations];
-        return locations.map((loc) => mapLocationToVue(loc, document, block, tempUri));
+        // 先看是否在 <script lang=\"py\"> 内部，如果是则走 Pylance 的跳转
+        const inScript = isInScriptPy(document, position);
+        if (inScript) {
+          const { tempUri, tempPosition, block } = getTempUriAndPosition(document, position);
+          if (!tempUri || !block) return null;
+          await ensureTempDocOpen(tempUri);
+          let locations = await vscode.commands.executeCommand(
+            'vscode.executeDefinitionProvider',
+            tempUri,
+            tempPosition
+          );
+          if (!locations) return undefined;
+          if (!Array.isArray(locations)) locations = [locations];
+          return locations.map((loc) => mapLocationToVue(loc, document, block, tempUri));
+        }
+
+        // 不在 script 中（一般是 template），尝试在 script 里基于源码查找 def / 赋值作为定义位置
+        const templateDefs = findDefsInScriptFromTemplate(document, position);
+        if (templateDefs.length) {
+          return templateDefs;
+        }
+        return null;
       },
     })
   );
