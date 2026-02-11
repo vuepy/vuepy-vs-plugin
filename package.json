@@ -1,6 +1,6 @@
 {
-  "name": "vuepy-highlight",
-  "displayName": "Vuepy Syntax Highlight",
+  "name": "vuepy",
+  "displayName": "Vuepy",
   "description": "Add Python syntax highlighting to Vue SFC script tags with lang='py'",
   "version": "0.0.1",
   "publisher": "vuepy-org",

@@ -214,6 +214,49 @@ function activate(context) {
       undefined
     )
   );
+
+  /** 大纲：转发 Pylance 的 DocumentSymbol，并把 range / selectionRange 映射回 Vue 坐标 */
+  context.subscriptions.push(
+    vscode.languages.registerDocumentSymbolProvider([{ language: 'vue' }], {
+      async provideDocumentSymbols(document) {
+        const text = document.getText();
+        const block = getScriptPyBlock(text);
+        if (!block) {
+          return [];
+        }
+        const tempPath = getTempPyPathAndWrite(document.uri, block.content);
+        const tempUri = vscode.Uri.file(tempPath);
+        await ensureTempDocOpen(tempUri);
+        const baseSymbols = await vscode.commands.executeCommand(
+          'vscode.executeDocumentSymbolProvider',
+          tempUri
+        );
+        if (!baseSymbols || !Array.isArray(baseSymbols) || baseSymbols.length === 0) {
+          return [];
+        }
+
+        function mapDocSymbol(sym) {
+          const mapped = new vscode.DocumentSymbol(
+            sym.name,
+            sym.detail || '',
+            sym.kind,
+            tempRangeToVueRange(block, sym.range),
+            tempRangeToVueRange(block, sym.selectionRange || sym.range)
+          );
+          if (sym.children && sym.children.length) {
+            mapped.children = sym.children.map(mapDocSymbol);
+          }
+          return mapped;
+        }
+
+        // 只处理 DocumentSymbol[]，SymbolInformation[] 直接忽略（避免坐标错乱）。
+        if (baseSymbols[0].range && baseSymbols[0].selectionRange) {
+          return baseSymbols.map(mapDocSymbol);
+        }
+        return [];
+      },
+    })
+  );
 }
 
 function deactivate() {}
