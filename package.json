@@ -34,5 +34,9 @@
   "main": "extension.js",
   "activationEvents": [
     "onLanguage:vue"
+  ],
+  "extensionDependencies": [
+    "ms-python.python",
+    "Vue.volar"
   ]
 }
