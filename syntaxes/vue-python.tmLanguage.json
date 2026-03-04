@@ -1,23 +1,29 @@
 {
-    "scopeName": "vue.injections.python",
-    "injectionSelector": "L:source.vue -comment, L:text.html.vue -comment",
-    "patterns": [
-      {
-        "name": "meta.embedded.block.python.vue",
-        "contentName": "source.python",
-        "begin": "(<)(script)(?:\\s[^>]*)?\\s(lang)\\s*(=)\\s*['\"]py['\"][^>]*?(>)",
-        "beginCaptures": {
-          "0": { "name": "punctuation.definition.tag.begin.vue" }
-        },
-        "end": "(</)(script)(\\s*)(>)",
-        "endCaptures": {
-          "0": { "name": "punctuation.definition.tag.end.vue" }
-        },
-        "patterns": [
-          {
-            "include": "source.python"
-          }
-        ]
-      }
-    ]
-  }
+  "scopeName": "vue.injections.python",
+  "injectionSelector": "L:source.vue -comment, L:text.html.vue -comment",
+  "patterns": [
+    {
+      "name": "meta.embedded.block.python.vue",
+      "contentName": "source.python",
+      "begin": "(<)(script)(\\s[^>]*?lang\\s*=\\s*(['\"])py\\4[^>]*)(>)",
+      "end": "(</)(script)(\\s*)(>)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.html.vue" },
+        "2": { "name": "entity.name.tag.script.html.vue" },
+        "3": { "name": "meta.tag.stuff" },
+        "5": { "name": "punctuation.definition.tag.end.html.vue" }
+      },
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.html.vue" },
+        "2": { "name": "entity.name.tag.script.html.vue" },
+        "3": { "name": "meta.whitespace.trailing.html" },
+        "4": { "name": "punctuation.definition.tag.end.html.vue" }
+      },
+      "patterns": [
+        {
+          "include": "source.python"
+        }
+      ]
+    }
+  ]
+}

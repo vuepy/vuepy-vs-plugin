@@ -1,0 +1,66 @@
+{
+  "scopeName": "vue.injections.pnmarkdown",
+  "injectionSelector": "L:source.vue -comment, L:text.html.vue -comment, L:text.html.derivative -comment",
+  "patterns": [
+    {
+      "name": "meta.embedded.block.markdown.vue",
+      "contentName": "text.html.markdown",
+      "begin": "(<)((?:[Pp][Nn][Mm]arkdown|pn-markdown))((?:\\s[^>]*)?)(>)",
+      "end": "(</)((?:[Pp][Nn][Mm]arkdown|pn-markdown))(\\s*)(>)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.html.vue" },
+        "2": { "name": "entity.name.tag.$2.html.vue" },
+        "3": { "name": "meta.tag.stuff" },
+        "4": { "name": "punctuation.definition.tag.end.html.vue" }
+      },
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.html.vue" },
+        "2": { "name": "entity.name.tag.$2.html.vue" },
+        "3": { "name": "meta.whitespace.trailing.html" },
+        "4": { "name": "punctuation.definition.tag.end.html.vue" }
+      },
+      "patterns": [
+        {
+          "comment": "ATX headers with optional leading whitespace (Vue template indentation)",
+          "match": "^(\\s*)(#{1,6})(\\s+)(.+)$",
+          "captures": {
+            "2": { "name": "punctuation.definition.heading.markdown" },
+            "4": { "name": "entity.name.section.markdown" }
+          },
+          "name": "markup.heading.markdown"
+        },
+        {
+          "comment": "Fenced code block with optional leading whitespace",
+          "begin": "^(\\s*)(```)(\\w*)\\s*$",
+          "end": "^(\\s*)(```)\\s*$",
+          "beginCaptures": {
+            "2": { "name": "punctuation.definition.fenced_code.block.begin.markdown" },
+            "3": { "name": "fenced_code.block.language.markdown" }
+          },
+          "endCaptures": {
+            "2": { "name": "punctuation.definition.fenced_code.block.end.markdown" }
+          },
+          "contentName": "source.python",
+          "name": "markup.fenced_code.block.markdown",
+          "patterns": [
+            { "include": "source.python" }
+          ]
+        },
+        {
+          "comment": "Unordered list with optional leading whitespace",
+          "match": "^(\\s*)([-*+])(\\s+)(.+)$",
+          "captures": {
+            "2": { "name": "punctuation.definition.list.begin.markdown" },
+            "4": { "name": "meta.paragraph.markdown" }
+          },
+          "name": "markup.list.unnumbered.markdown"
+        },
+        {
+          "comment": "Inline code",
+          "match": "`[^`]+`",
+          "name": "markup.inline.raw.markdown"
+        }
+      ]
+    }
+  ]
+}

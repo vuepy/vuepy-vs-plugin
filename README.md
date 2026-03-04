@@ -1,6 +1,6 @@
 # Vue `<script lang="py">` Python 高亮与语言功能扩展
 
-- **语法高亮**：给 Vue SFC 里 `<script lang="py">` 代码块加上 Python 高亮。
+- **语法高亮**：给 Vue SFC 里 `<script lang="py">` 代码块加上 Python 高亮；给 `<PnMarkdown>` 内的内容加上 Markdown 高亮（含标题、列表、代码块等）。
 - **跳转 / 悬停 / 引用**：在 `<script lang="py">` 内支持 **Go to Definition**、**Hover**、**Find References**，通过虚拟文档转发给已安装的 Python 语言服务（Pylance / Python 扩展）。
 
 ## 依赖的扩展（会自动安装）
@@ -10,8 +10,7 @@
 | 扩展 ID | 说明 |
 |--------|------|
 | `Vue.volar` | Vue - Official (Volar)，提供 Vue 语言与 `source.vue` / `text.html.vue` 语法，高亮与 LSP 基础 |
-| `ms-python.python` | Python，提供 Python 运行与基础支持 |
-| `ms-python.vscode-pylance` | Pylance，提供跳转、悬停、引用、补全、大纲、格式化等 Python 语言服务 |
+| `ms-python.python` | Python，提供 Python 运行与基础支持。Pylance 是 Python 扩展的一部分，会自动安装，提供跳转、悬停、引用、补全、大纲、格式化等 Python 语言服务 |
 
 若通过「从 VSIX 安装」或「复制到扩展目录」方式安装，未安装上述依赖时请到扩展市场手动安装 **Vue - Official** 和 **Python**（通常已带 Pylance）。
 
