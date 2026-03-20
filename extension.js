@@ -282,10 +282,6 @@ function activate(context) {
         return;
       }
       const filePath = doc.uri.fsPath;
-      if (!getScriptPyBlock(doc.getText())) {
-        vscode.window.showWarningMessage('当前 .vue 文件不含 <script lang="py">，无法运行');
-        return;
-      }
       const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
       const cwd = folder ? folder.uri.fsPath : path.dirname(filePath);
       let pythonPath = 'python';
@@ -303,12 +299,14 @@ function activate(context) {
           if (details?.execCommand?.[0]) pythonPath = details.execCommand[0];
         }
       } catch (_) {}
-      const term = vscode.window.createTerminal({
-        name: 'Vuepy',
-        cwd,
-      });
-      term.sendText(`${JSON.stringify(pythonPath)} -m vuepy run ${JSON.stringify(filePath)}`);
+      const VUEPY_TERM_NAME = 'vuepy';
+      let term = vscode.window.terminals.find((t) => t.name === VUEPY_TERM_NAME);
+      if (!term) {
+        term = vscode.window.createTerminal({ name: VUEPY_TERM_NAME, cwd });
+      }
       term.show();
+      const runCmd = `${JSON.stringify(pythonPath)} -m vuepy run ${JSON.stringify(filePath)}`;
+      term.sendText(`cd ${JSON.stringify(cwd)} && ${runCmd}`);
     })
   );
 
