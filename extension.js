@@ -305,15 +305,15 @@ function activate(context) {
       }
       const ctx = await resolveVuepyRunContext(editor.document);
       if (!ctx) return;
-      const { filePath, cwd, pythonPath } = ctx;
+      const { filePath, pythonPath } = ctx;
       const VUEPY_TERM_NAME = 'vuepy';
       let term = vscode.window.terminals.find((t) => t.name === VUEPY_TERM_NAME);
       if (!term) {
-        term = vscode.window.createTerminal({ name: VUEPY_TERM_NAME, cwd });
+        term = vscode.window.createTerminal({ name: VUEPY_TERM_NAME });
       }
       term.show();
       const runCmd = `${JSON.stringify(pythonPath)} -m vuepy run ${JSON.stringify(filePath)}`;
-      term.sendText(`cd ${JSON.stringify(cwd)} && ${runCmd}`);
+      term.sendText(runCmd);
     })
   );
 

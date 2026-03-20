@@ -63,9 +63,9 @@
 - **调试命令**：`vuepy.debugVueFile`，标题 **Debug Vuepy file**。使用 Python 扩展的调试适配器（`type: python`），以 `module: vuepy`、`args: ['run', <当前文件>]` 启动，可在 `.vue` 编译出的 Python / 依赖库中打断点（需在对应 `.py` 中设断点或调整 `justMyCode`）。
 - **菜单**：当 **`vuepy.hasScriptPy`** 为真时，在编辑器标题栏 **Run** 下拉中显示上述两项（`when`: `resourceExtname == .vue && vuepy.hasScriptPy`）。
 - **逻辑**：当前文件为 `.vue` 且包含 `<script lang="py">` 时，在终端中执行：  
-  `cd <工作目录> && <python> -m vuepy run <当前文件路径>`  
-  其中解释器优先 **Python 扩展** `getExecutionDetails`，否则 `python.defaultInterpreterPath`，再否则 `python`。工作目录为工作区根或文件所在目录。
-- **终端复用**：优先查找已存在、名称为 **`Vuepy`** 的终端并复用，避免每次点击都新开标签；若已关闭该终端则再创建。每次运行前会 `cd` 到当前工作目录，保证多根工作区或切换文件时路径正确。
+  `<python> -m vuepy run <当前文件绝对路径>`  
+  其中解释器优先 **Python 扩展** `getExecutionDetails`，否则 `python.defaultInterpreterPath`，再否则 `python`。**不会**先 `cd` 到工作区目录，也不为新建终端指定 `cwd`，由当前 shell 所在目录决定相对路径行为。
+- **终端复用**：优先复用名称为 **`vuepy`** 的终端；若已关闭则新建。调试启动仍使用 `launch` 里的 `cwd`（工作区根或文件所在目录），便于 Python 解析相对导入。
 
 **上下文 `vuepy.hasScriptPy`**：扩展在激活时与切换活动编辑器、当前文档变更时扫描活动 `.vue` 是否含 `<script lang="py">`，动态更新该上下文，从而控制 Run 按钮是否出现。
 
