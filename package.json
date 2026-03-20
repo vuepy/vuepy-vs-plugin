@@ -11,6 +11,21 @@
     "Programming Languages"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "vuepy.runVueFile",
+        "title": "▶ Run Vuepy file"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "vuepy.runVueFile",
+          "when": "resourceExtname == .vue && vuepy.hasScriptPy",
+          "group": "navigation"
+        }
+      ]
+    },
     "grammars": [
       {
         "scopeName": "vue.injections.python",
@@ -33,7 +48,14 @@
         ],
         "embeddedLanguages": {
           "text.html.markdown": "markdown",
-          "source.python": "python"
+          "source.python": "python",
+          "source.json": "json",
+          "source.js": "javascript",
+          "source.ts": "typescript",
+          "source.shell": "shellscript",
+          "text.html.basic": "html",
+          "source.css": "css",
+          "source.yaml": "yaml"
         }
       }
     ]

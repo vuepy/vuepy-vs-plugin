@@ -10,6 +10,9 @@ function activate(context) {
   const CACHE_DIR_IN_WORKSPACE = '.vue-py-cache';
   const TEMP_SUBDIR = 'vue-py-scripts';
 
+  // 默认不显示 Run 按钮，等 updateRunButtonContext 检查后再决定
+  vscode.commands.executeCommand('setContext', 'vuepy.hasScriptPy', false);
+
   /** 从 Vue 文档中解析 <script lang="py"> 块：{ content, startLine1Based, startOffset, endOffset } 或 null */
   function getScriptPyBlock(text) {
     const re = /<script\s+[^>]*lang\s*=\s*["']py["'][^>]*>([\s\S]*?)<\/script>/i;
@@ -170,21 +173,75 @@ function activate(context) {
     } catch (_) {}
   }
 
+  /** 从 document.uri 解析出对应的 .vue 源文件（支持 Volar 虚拟 URI 等） */
+  function resolveVueDocument(uri) {
+    if (uri.scheme === 'file' && uri.fsPath.endsWith('.vue')) return uri;
+    const s = uri.toString();
+    const vueMatch = s.match(/([^/]+\.vue)(?:\?|$)/);
+    if (vueMatch) {
+      const workspaceFolders = vscode.workspace.workspaceFolders || [];
+      for (const folder of workspaceFolders) {
+        const candidate = vscode.Uri.joinPath(folder.uri, vueMatch[1]);
+        try {
+          if (fs.existsSync(candidate.fsPath)) return candidate;
+        } catch (_) {}
+      }
+      const pathMatch = s.match(/[\/]([^\/]+\/[^\/]+\.vue)/);
+      if (pathMatch) {
+        for (const folder of workspaceFolders) {
+          const candidate = vscode.Uri.joinPath(folder.uri, pathMatch[1]);
+          try {
+            if (fs.existsSync(candidate.fsPath)) return candidate;
+          } catch (_) {}
+        }
+      }
+    }
+    return null;
+  }
+
   /** 从 template 中的标识符跳转到 script 里的定义（简单基于 Python 源码查找 def / 赋值行） */
   function findDefsInScriptFromTemplate(document, position) {
-    const text = document.getText();
-    const block = getScriptPyBlock(text);
+    let text = document.getText();
+    let block = getScriptPyBlock(text);
+    let targetUri = document.uri;
+
+    if (!block) {
+      const resolved = resolveVueDocument(document.uri);
+      if (resolved && resolved.toString() !== document.uri.toString()) {
+        try {
+          const vueDoc = fs.readFileSync(resolved.fsPath, 'utf8');
+          block = getScriptPyBlock(vueDoc);
+          text = vueDoc;
+          targetUri = resolved;
+        } catch (_) {}
+      }
+    }
     if (!block) return [];
 
-    const wordRange = document.getWordRangeAtPosition(position);
-    if (!wordRange) return [];
-    const name = document.getText(wordRange);
+    let wordRange = document.getWordRangeAtPosition(position);
+    let name = wordRange ? document.getText(wordRange) : '';
+    if (!name) {
+      const docLines = document.getText().split(/\r?\n/);
+      const line = (position.line < docLines.length ? docLines[position.line] : '') || '';
+      const pyIdMatch = line.match(/([a-zA-Z_][a-zA-Z0-9_]*)/g);
+      if (pyIdMatch) {
+        for (const id of pyIdMatch) {
+          const idx = line.indexOf(id);
+          if (position.character >= idx && position.character <= idx + id.length) {
+            name = id;
+            break;
+          }
+        }
+      }
+    }
     if (!name) return [];
 
     const lines = block.content.split(/\r?\n/);
     const results = [];
-    const defRe = new RegExp('^\\s*def\\s+' + name + '\\s*\\(');
-    const assignRe = new RegExp('^\\s*' + name + '\\s*=');
+    // 支持 async def 和普通 def
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const defRe = new RegExp('^\\s*(?:async\\s+)?def\\s+' + escapedName + '\\s*\\(');
+    const assignRe = new RegExp('^\\s*' + escapedName + '\\s*=');
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -193,7 +250,7 @@ function activate(context) {
         const col = m.index + m[0].indexOf(name);
         const vueLine = block.startLine1Based - 1 + i;
         const range = new vscode.Range(vueLine, col, vueLine, col + name.length);
-        results.push(new vscode.Location(document.uri, range));
+        results.push(new vscode.Location(targetUri, range));
         continue;
       }
       m = assignRe.exec(line);
@@ -201,14 +258,63 @@ function activate(context) {
         const col = m.index;
         const vueLine = block.startLine1Based - 1 + i;
         const range = new vscode.Range(vueLine, col, vueLine, col + name.length);
-        results.push(new vscode.Location(document.uri, range));
+        results.push(new vscode.Location(targetUri, range));
       }
     }
     return results;
   }
 
+  /** 运行 Vuepy .vue 文件（需含 <script lang="py">）：在终端执行 python -m vuepy run */
   context.subscriptions.push(
-    vscode.languages.registerDefinitionProvider([{ language: 'vue' }], {
+    vscode.commands.registerCommand('vuepy.runVueFile', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showWarningMessage('请先打开一个 .vue 文件');
+        return;
+      }
+      const doc = editor.document;
+      if (doc.languageId !== 'vue' || !doc.uri.fsPath.endsWith('.vue')) {
+        vscode.window.showWarningMessage('当前文件不是 .vue 文件');
+        return;
+      }
+      if (!getScriptPyBlock(doc.getText())) {
+        vscode.window.showWarningMessage('当前文件不含 <script lang="py">，无法运行');
+        return;
+      }
+      const filePath = doc.uri.fsPath;
+      if (!getScriptPyBlock(doc.getText())) {
+        vscode.window.showWarningMessage('当前 .vue 文件不含 <script lang="py">，无法运行');
+        return;
+      }
+      const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
+      const cwd = folder ? folder.uri.fsPath : path.dirname(filePath);
+      let pythonPath = 'python';
+      try {
+        const cfg = vscode.workspace.getConfiguration('python', doc.uri);
+        const interpreterPath = cfg.get('defaultInterpreterPath');
+        if (interpreterPath && typeof interpreterPath === 'string') {
+          pythonPath = interpreterPath.trim();
+        }
+      } catch (_) {}
+      try {
+        const pyExt = vscode.extensions.getExtension('ms-python.python');
+        if (pyExt?.isActive && pyExt.exports?.settings?.getExecutionDetails) {
+          const details = await pyExt.exports.settings.getExecutionDetails(doc.uri);
+          if (details?.execCommand?.[0]) pythonPath = details.execCommand[0];
+        }
+      } catch (_) {}
+      const term = vscode.window.createTerminal({
+        name: 'Vuepy',
+        cwd,
+      });
+      term.sendText(`${JSON.stringify(pythonPath)} -m vuepy run ${JSON.stringify(filePath)}`);
+      term.show();
+    })
+  );
+
+  const vueDocSelector = [{ language: 'vue' }, { scheme: 'file', pattern: '**/*.vue' }];
+  context.subscriptions.push(
+    vscode.languages.registerDefinitionProvider(vueDocSelector, {
       async provideDefinition(document, position) {
         // 先看是否在 <script lang=\"py\"> 内部，如果是则走 Pylance 的跳转
         const inScript = isInScriptPy(document, position);
@@ -471,6 +577,32 @@ function activate(context) {
         }
         return formatScriptBlock(document, options, range, token);
       },
+    })
+  );
+
+  /** 更新 Run 按钮可见性：仅在含 <script lang="py"> 时显示 */
+  function updateRunButtonContext() {
+    try {
+      const editor = vscode.window.activeTextEditor;
+      const uri = editor?.document?.uri;
+      let has = false;
+      if (uri?.scheme === 'file' && uri.fsPath.endsWith('.vue')) {
+        const text = editor.document.getText();
+        has = getScriptPyBlock(text) != null;
+      }
+      vscode.commands.executeCommand('setContext', 'vuepy.hasScriptPy', has);
+    } catch (_) {
+      vscode.commands.executeCommand('setContext', 'vuepy.hasScriptPy', false);
+    }
+  }
+
+  vscode.commands.executeCommand('setContext', 'vuepy.hasScriptPy', false);
+  updateRunButtonContext();
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(updateRunButtonContext),
+    vscode.workspace.onDidChangeTextDocument((e) => {
+      const editor = vscode.window.activeTextEditor;
+      if (editor && e.document === editor.document) updateRunButtonContext();
     })
   );
 }
