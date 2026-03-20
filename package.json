@@ -14,7 +14,13 @@
     "commands": [
       {
         "command": "vuepy.runVueFile",
-        "title": "▶ Run Vuepy file"
+        "title": "▶ Run Vuepy file",
+        "icon": "$(play)"
+      },
+      {
+        "command": "vuepy.debugVueFile",
+        "title": "Debug Vuepy file",
+        "icon": "$(debug-alt)"
       }
     ],
     "menus": {
@@ -22,7 +28,12 @@
         {
           "command": "vuepy.runVueFile",
           "when": "resourceExtname == .vue && vuepy.hasScriptPy",
-          "group": "navigation"
+          "group": "navigation@1"
+        },
+        {
+          "command": "vuepy.debugVueFile",
+          "when": "resourceExtname == .vue && vuepy.hasScriptPy",
+          "group": "navigation@2"
         }
       ]
     },

@@ -264,6 +264,37 @@ function activate(context) {
     return results;
   }
 
+  /** 解析当前 .vue 的运行上下文；失败时提示并返回 null */
+  async function resolveVuepyRunContext(doc) {
+    if (doc.languageId !== 'vue' || !doc.uri.fsPath.endsWith('.vue')) {
+      vscode.window.showWarningMessage('当前文件不是 .vue 文件');
+      return null;
+    }
+    if (!getScriptPyBlock(doc.getText())) {
+      vscode.window.showWarningMessage('当前文件不含 <script lang="py">，无法运行或调试');
+      return null;
+    }
+    const filePath = doc.uri.fsPath;
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(doc.uri);
+    const cwd = workspaceFolder ? workspaceFolder.uri.fsPath : path.dirname(filePath);
+    let pythonPath = 'python';
+    try {
+      const cfg = vscode.workspace.getConfiguration('python', doc.uri);
+      const interpreterPath = cfg.get('defaultInterpreterPath');
+      if (interpreterPath && typeof interpreterPath === 'string') {
+        pythonPath = interpreterPath.trim();
+      }
+    } catch (_) {}
+    try {
+      const pyExt = vscode.extensions.getExtension('ms-python.python');
+      if (pyExt?.isActive && pyExt.exports?.settings?.getExecutionDetails) {
+        const details = await pyExt.exports.settings.getExecutionDetails(doc.uri);
+        if (details?.execCommand?.[0]) pythonPath = details.execCommand[0];
+      }
+    } catch (_) {}
+    return { filePath, cwd, pythonPath, workspaceFolder };
+  }
+
   /** 运行 Vuepy .vue 文件（需含 <script lang="py">）：在终端执行 python -m vuepy run */
   context.subscriptions.push(
     vscode.commands.registerCommand('vuepy.runVueFile', async () => {
@@ -272,33 +303,9 @@ function activate(context) {
         vscode.window.showWarningMessage('请先打开一个 .vue 文件');
         return;
       }
-      const doc = editor.document;
-      if (doc.languageId !== 'vue' || !doc.uri.fsPath.endsWith('.vue')) {
-        vscode.window.showWarningMessage('当前文件不是 .vue 文件');
-        return;
-      }
-      if (!getScriptPyBlock(doc.getText())) {
-        vscode.window.showWarningMessage('当前文件不含 <script lang="py">，无法运行');
-        return;
-      }
-      const filePath = doc.uri.fsPath;
-      const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
-      const cwd = folder ? folder.uri.fsPath : path.dirname(filePath);
-      let pythonPath = 'python';
-      try {
-        const cfg = vscode.workspace.getConfiguration('python', doc.uri);
-        const interpreterPath = cfg.get('defaultInterpreterPath');
-        if (interpreterPath && typeof interpreterPath === 'string') {
-          pythonPath = interpreterPath.trim();
-        }
-      } catch (_) {}
-      try {
-        const pyExt = vscode.extensions.getExtension('ms-python.python');
-        if (pyExt?.isActive && pyExt.exports?.settings?.getExecutionDetails) {
-          const details = await pyExt.exports.settings.getExecutionDetails(doc.uri);
-          if (details?.execCommand?.[0]) pythonPath = details.execCommand[0];
-        }
-      } catch (_) {}
+      const ctx = await resolveVuepyRunContext(editor.document);
+      if (!ctx) return;
+      const { filePath, cwd, pythonPath } = ctx;
       const VUEPY_TERM_NAME = 'vuepy';
       let term = vscode.window.terminals.find((t) => t.name === VUEPY_TERM_NAME);
       if (!term) {
@@ -307,6 +314,37 @@ function activate(context) {
       term.show();
       const runCmd = `${JSON.stringify(pythonPath)} -m vuepy run ${JSON.stringify(filePath)}`;
       term.sendText(`cd ${JSON.stringify(cwd)} && ${runCmd}`);
+    })
+  );
+
+  /** 调试：用 Python 扩展启动 debugpy，等价 python -m vuepy run <file> */
+  context.subscriptions.push(
+    vscode.commands.registerCommand('vuepy.debugVueFile', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) {
+        vscode.window.showWarningMessage('请先打开一个 .vue 文件');
+        return;
+      }
+      const ctx = await resolveVuepyRunContext(editor.document);
+      if (!ctx) return;
+      const { filePath, cwd, pythonPath, workspaceFolder } = ctx;
+      const launch = {
+        name: 'Vuepy: debug .vue',
+        type: 'python',
+        request: 'launch',
+        module: 'vuepy',
+        args: ['run', filePath],
+        cwd,
+        console: 'integratedTerminal',
+        python: pythonPath,
+        justMyCode: true,
+      };
+      const started = await vscode.debug.startDebugging(workspaceFolder || undefined, launch);
+      if (!started) {
+        vscode.window.showErrorMessage(
+          '无法启动调试：请确认已安装 Python 扩展，且工作区已选择解释器'
+        );
+      }
     })
   );
 
