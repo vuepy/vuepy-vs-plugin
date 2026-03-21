@@ -48,6 +48,8 @@
 | **补全** | script 内：转发 Pylance 补全，并把 `range` / `additionalTextEdits` 从临时文件坐标映射回 `.vue`。 |
 | **大纲（文档符号）** | 对整块 script 生成临时文件并取 Pylance 的 DocumentSymbol，将 `range` / `selectionRange` 映射回 `.vue`（仅处理 `DocumentSymbol` 树状结构）。 |
 | **格式化** | **格式化文档** / **格式化选区**：仅替换 `<script lang="py">` 与 `</script>` **之间**的内容；标签与 template/style 不动。格式化使用**未包在 `setup()` 里**的原始块内容写入临时 `.py`，再调用 `vscode.executeFormatDocumentProvider`，避免把整块强行包成函数后破坏格式化器语义。 |
+| **重命名（F2）** | 仅在 script 块内生效。`prepareRename` 阶段检查光标是否在可重命名的标识符上；`provideRenameEdits` 将请求转发给 Pylance（`vscode.executeDocumentRenameProvider`），把返回的 `WorkspaceEdit` 中临时文件的坐标映射回 `.vue` 文件；跨文件重构（如其他 `.py`）的编辑原样保留。**注意**：由于临时文件是孤立的，template 中同名用法不在 Pylance 的重命名范围内，仅 script 内部生效。 |
+| **代码重构动作** | 在 script 块内，把当前选区映射到临时文件后调用 `vscode.executeCodeActionProvider`，将 Pylance 返回的 `CodeAction`（Extract Function、Inline Variable、Quick Fix 等）中的 `WorkspaceEdit` 坐标映射回 `.vue`。支持的 `CodeActionKind`：`Refactor`、`RefactorExtract`、`RefactorInline`、`RefactorRewrite`、`QuickFix`。 |
 
 **临时文件与缓存**：
 
@@ -128,5 +130,6 @@ vsce package
 - 扩展包名与入口统一为 **Vuepy**（`vuepy` / `extension.js`），并声明对 **Volar**、**Python** 的硬依赖。
 - **PnMarkdown 语法注入** 增加对 **`text.html.derivative`** 的注入目标；块内支持多种围栏语言与更完整的 Markdown 片段；标签名兼容 `PnMarkdown`、`pn-markdown`、`Markdown`、`markdown`。
 - **语言功能**：在原有跳转/悬停/引用基础上，增加 **补全**、**大纲**、**仅 script 块的格式化**（独立临时文件策略）。
+- **重命名与重构**：新增 **重命名（F2）** 与 **代码重构动作（Extract / Inline / QuickFix）**，均通过 `mapWorkspaceEditToVue` 将临时文件坐标映射回 `.vue`；重命名限 script 内部（template 侧用法不在 Pylance 识别范围内）。
 - **Template ↔ Script**：template 中简单 **转到定义**、**引用** 与 script 符号的联动；兼容 Volar 虚拟 URI 的 **真实 .vue 路径解析**。
 - **运行**：新增 **Run Vuepy file** 命令与标题栏 Run 按钮（仅当存在 `<script lang="py">` 时显示）。

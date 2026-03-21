@@ -616,6 +616,113 @@ function activate(context) {
     })
   );
 
+  /**
+   * 将 Pylance 返回的 WorkspaceEdit 中指向临时文件的编辑映射回 Vue 文件坐标。
+   * 其余文件（如跨文件重构）原样保留。
+   */
+  function mapWorkspaceEditToVue(wsEdit, document, block, tempUri) {
+    const newWsEdit = new vscode.WorkspaceEdit();
+    for (const [uri, edits] of wsEdit.entries()) {
+      const isTemp = uri.fsPath === tempUri.fsPath || uri.toString() === tempUri.toString();
+      if (isTemp) {
+        const vueEdits = edits.map((edit) => {
+          const vueRange = tempRangeToVueRange(block, edit.range);
+          return new vscode.TextEdit(vueRange, edit.newText);
+        });
+        newWsEdit.set(document.uri, vueEdits);
+      } else {
+        newWsEdit.set(uri, edits);
+      }
+    }
+    return newWsEdit;
+  }
+
+  /** 重命名（F2）：转发给 Pylance，将返回的 WorkspaceEdit 坐标映射回 Vue 文件 */
+  context.subscriptions.push(
+    vscode.languages.registerRenameProvider([{ language: 'vue' }], {
+      prepareRename(document, position) {
+        const inScript = isInScriptPy(document, position);
+        if (!inScript) {
+          throw new Error('只支持在 <script lang="py"> 内重命名');
+        }
+        const wordRange = document.getWordRangeAtPosition(position, /[a-zA-Z_][a-zA-Z0-9_]*/);
+        if (!wordRange) {
+          throw new Error('光标处无可重命名的符号');
+        }
+        return wordRange;
+      },
+
+      async provideRenameEdits(document, position, newName) {
+        const inScript = isInScriptPy(document, position);
+        if (!inScript) return null;
+        const { tempUri, tempPosition, block } = getTempUriAndPosition(document, position);
+        if (!tempUri || !block) return null;
+        await ensureTempDocOpen(tempUri);
+        let wsEdit;
+        try {
+          wsEdit = await vscode.commands.executeCommand(
+            'vscode.executeDocumentRenameProvider',
+            tempUri,
+            tempPosition,
+            newName
+          );
+        } catch (e) {
+          vscode.window.showErrorMessage('重命名失败: ' + (e && e.message ? e.message : String(e)));
+          return null;
+        }
+        if (!wsEdit) return null;
+        return mapWorkspaceEditToVue(wsEdit, document, block, tempUri);
+      },
+    })
+  );
+
+  /** 代码重构动作（Extract/Inline/QuickFix 等）：转发 Pylance 的 CodeAction，映射 WorkspaceEdit 坐标 */
+  context.subscriptions.push(
+    vscode.languages.registerCodeActionsProvider(
+      [{ language: 'vue' }],
+      {
+        async provideCodeActions(document, range, _context, _token) {
+          const inScript = isInScriptPy(document, range.start);
+          if (!inScript) return [];
+          const block = inScript;
+          const tempPath = getTempPyPathAndWrite(document.uri, block.content);
+          const tempUri = vscode.Uri.file(tempPath);
+          await ensureTempDocOpen(tempUri);
+          const tempStart = vueToTemp(block, range.start);
+          const tempEnd = vueToTemp(block, range.end);
+          const tempRange = new vscode.Range(tempStart, tempEnd);
+          let actions;
+          try {
+            actions = await vscode.commands.executeCommand(
+              'vscode.executeCodeActionProvider',
+              tempUri,
+              tempRange
+            );
+          } catch (_) {
+            return [];
+          }
+          if (!Array.isArray(actions) || !actions.length) return [];
+          return actions
+            .map((action) => {
+              if (!action.edit) return action;
+              action.edit = mapWorkspaceEditToVue(action.edit, document, block, tempUri);
+              return action;
+            })
+            .filter(Boolean);
+        },
+      },
+      {
+        providedCodeActionKinds: [
+          vscode.CodeActionKind.Refactor,
+          vscode.CodeActionKind.RefactorExtract,
+          vscode.CodeActionKind.RefactorInline,
+          vscode.CodeActionKind.RefactorRewrite,
+          vscode.CodeActionKind.QuickFix,
+        ],
+      }
+    )
+  );
+
   /** 更新 Run 按钮可见性：仅在含 <script lang="py"> 时显示 */
   function updateRunButtonContext() {
     try {
