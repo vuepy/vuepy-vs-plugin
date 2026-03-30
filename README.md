@@ -1,30 +1,30 @@
-# Vuepy（VS Code / Cursor 扩展）
+# Vuepy (VS Code / Cursor Extension)
 
-为 **Vue SFC（`.vue`）** 提供 Vuepy 相关语法与语言功能：`<script lang="py">` 的 Python 高亮与 **Pylance 转发**、`<PnMarkdown>` / `<markdown>` 等块内的 Markdown 高亮，以及运行入口等。
+Provides Vuepy-related syntax and language features for **Vue SFC (`.vue`) files**: Python highlighting and **Pylance forwarding** for `<script lang="py">`, Markdown highlighting inside `<PnMarkdown>` / `<markdown>` blocks, and run/debug entry points.
 
-扩展标识：`name` 为 `vuepy`，`publisher` 为 `vuepy-org`，`displayName` 为 **Vuepy**。
+Extension identifiers: `name` = `vuepy`, `publisher` = `vuepy-org`, `displayName` = **Vuepy**.
 
 ---
 
-## 功能概览
+## Features Overview
 
-### 语法高亮（`package.json` → `contributes.grammars`）
+### Syntax Highlighting (`package.json` → `contributes.grammars`)
 
-1. **`vue.injections.python`**（`syntaxes/vue-python.tmLanguage.json`）  
-   在 `source.vue`、`text.html.vue` 中，为 `<script lang="py">` 内嵌 **Python** 作用域，便于与 Volar 的 Vue 语法叠加高亮。
+1. **`vue.injections.python`** (`syntaxes/vue-python.tmLanguage.json`)  
+   Embeds the **Python** scope inside `<script lang="py">` within `source.vue` and `text.html.vue`, enabling stacked highlighting alongside Volar's Vue syntax.
 
-2. **`vue.injections.pnmarkdown`**（`syntaxes/vue-pnmarkdown.tmLanguage.json`）  
-   在下列根语法上**注入** Markdown 风格高亮（排除注释区域）：
+2. **`vue.injections.pnmarkdown`** (`syntaxes/vue-pnmarkdown.tmLanguage.json`)  
+   **Injects** Markdown-style highlighting (excluding comment regions) into the following root grammars:
    - `source.vue`
    - `text.html.vue`
-   - `text.html.derivative`（部分环境 / 衍生 HTML 视图也会用到，与 Volar 等配合时更稳）
+   - `text.html.derivative` (used in certain environments / derived HTML views; more stable when combined with Volar etc.)
 
-   **支持的标签名**（开始/结束标签需配对，大小写按正则允许的形式）：  
-   `PnMarkdown`、`pn-markdown`、`Markdown`、`markdown`。
+   **Supported tag names** (opening/closing tags must be paired; case as permitted by the regex):  
+   `PnMarkdown`, `pn-markdown`, `Markdown`, `markdown`.
 
-   **块内规则要点**：
-   - **ATX 标题** `#`～`######`：允许行首缩进（适配 template 里缩进排版）。
-   - **围栏代码块** `` ```lang ``：按语言切换内嵌语法，并在 `package.json` 的 `embeddedLanguages` 中与编辑器语言 id 对齐，例如：
+   **Key rules inside blocks**:
+   - **ATX headings** `#`–`######`: leading indentation is allowed (to accommodate indented layouts inside templates).
+   - **Fenced code blocks** `` ```lang ``: switches embedded syntax by language and aligns with editor language IDs in `package.json`'s `embeddedLanguages`, e.g.:
      - `python` / `py` → Python  
      - `json` / `jsonc` → JSON  
      - `javascript` / `js` → JavaScript  
@@ -33,79 +33,79 @@
      - `html` / `htm` / `vue` → HTML  
      - `css` / `scss` / `less` → CSS  
      - `yaml` / `yml` → YAML  
-     - 其它 `` ``` `` 语言标记：回退为通用围栏块（内嵌规则见该 tmLanguage 文件中的 fallback 定义）。
-   - **引用** `>`、**无序列表**、**行内代码** `` `...` ``、**粗体/斜体/删除线** 等常见 Markdown 片段高亮。
+     - Other `` ``` `` language markers: fall back to a generic fenced block (see the fallback definition in the tmLanguage file).
+   - Common Markdown highlights: **blockquotes** `>`, **unordered lists**, **inline code** `` `...` ``, **bold / italic / strikethrough**, etc.
 
-### 语言服务转发（`extension.js`）
+### Language Service Forwarding (`extension.js`)
 
-在 **`<script lang="py">`** 区域内，扩展会把块内源码同步到临时 `.py` 文件，再调用 VS Code 内置的 `vscode.execute*` 命令，把 **Pylance（Python 扩展）** 的结果**映射回当前 `.vue`**。
+Inside **`<script lang="py">`** regions, the extension syncs the block's source code to a temporary `.py` file, then calls VS Code's built-in `vscode.execute*` commands to **map results from Pylance (Python extension) back to the current `.vue` file**.
 
-| 能力 | 行为说明 |
-|------|----------|
-| **转到定义** | 在 script 内：走 Pylance，返回位置映射回 `.vue` 或外部 `.py`。在 **template** 等 script 外：对当前词在 script 中做简单源码匹配（`def` / `async def`、顶层 `name =`），跳转到匹配行。 |
-| **悬停** | 仅在 script 块内生效，悬停内容来自 Pylance。 |
-| **查找引用** | script 内：Pylance 引用 + 映射；同时可在 **template** 中对同名标识符做简单全文匹配，合并结果（跳过 script 区域避免重复）。 |
-| **补全** | script 内：转发 Pylance 补全，并把 `range` / `additionalTextEdits` 从临时文件坐标映射回 `.vue`。 |
-| **大纲（文档符号）** | 对整块 script 生成临时文件并取 Pylance 的 DocumentSymbol，将 `range` / `selectionRange` 映射回 `.vue`（仅处理 `DocumentSymbol` 树状结构）。 |
-| **格式化** | **格式化文档** / **格式化选区**：仅替换 `<script lang="py">` 与 `</script>` **之间**的内容；标签与 template/style 不动。格式化使用**未包在 `setup()` 里**的原始块内容写入临时 `.py`，再调用 `vscode.executeFormatDocumentProvider`，避免把整块强行包成函数后破坏格式化器语义。 |
-| **重命名（F2）** | 仅在 script 块内生效。`prepareRename` 阶段检查光标是否在可重命名的标识符上；`provideRenameEdits` 将请求转发给 Pylance（`vscode.executeDocumentRenameProvider`），把返回的 `WorkspaceEdit` 中临时文件的坐标映射回 `.vue` 文件；跨文件重构（如其他 `.py`）的编辑原样保留。**注意**：由于临时文件是孤立的，template 中同名用法不在 Pylance 的重命名范围内，仅 script 内部生效。 |
-| **代码重构动作** | 在 script 块内，把当前选区映射到临时文件后调用 `vscode.executeCodeActionProvider`，将 Pylance 返回的 `CodeAction`（Extract Function、Inline Variable、Quick Fix 等）中的 `WorkspaceEdit` 坐标映射回 `.vue`。支持的 `CodeActionKind`：`Refactor`、`RefactorExtract`、`RefactorInline`、`RefactorRewrite`、`QuickFix`。 |
+| Capability | Behavior |
+|------------|----------|
+| **Go to Definition** | Inside script: delegates to Pylance and maps the returned position back to `.vue` or an external `.py`. Outside script (e.g. template): performs a simple source-text match (`def` / `async def`, top-level `name =`) within the script block and jumps to the matching line. |
+| **Hover** | Only active inside the script block; hover content comes from Pylance. |
+| **Find References** | Inside script: Pylance references + position mapping. Also performs a simple full-text match for the same identifier in the **template**, merging results (skipping the script region to avoid duplicates). |
+| **Completion** | Inside script: forwards Pylance completions and maps `range` / `additionalTextEdits` from temporary-file coordinates back to `.vue`. |
+| **Outline (Document Symbols)** | Writes the entire script block to a temporary file, retrieves Pylance's DocumentSymbol tree, and maps `range` / `selectionRange` back to `.vue` (handles `DocumentSymbol` tree structure only). |
+| **Formatting** | **Format Document** / **Format Selection**: only replaces content **between** `<script lang="py">` and `</script>`; tags, template, and style sections are untouched. Formatting writes the raw block content (not wrapped in `setup()`) to a temporary `.py` file, then calls `vscode.executeFormatDocumentProvider`, avoiding semantic issues that would arise from wrapping the whole block in a function. |
+| **Rename (F2)** | Only active inside the script block. The `prepareRename` phase checks whether the cursor is on a renameable identifier. `provideRenameEdits` forwards the request to Pylance (`vscode.executeDocumentRenameProvider`) and maps the returned `WorkspaceEdit`'s temporary-file coordinates back to the `.vue` file; edits from cross-file refactoring (e.g. other `.py` files) are preserved as-is. **Note**: because the temporary file is isolated, usages in templates are not within Pylance's rename scope — only the script interior is affected. |
+| **Code Refactor Actions** | Inside the script block, maps the current selection to the temporary file and calls `vscode.executeCodeActionProvider`. Maps `WorkspaceEdit` coordinates from Pylance's returned `CodeAction` (Extract Function, Inline Variable, Quick Fix, etc.) back to `.vue`. Supported `CodeActionKind` values: `Refactor`, `RefactorExtract`, `RefactorInline`, `RefactorRewrite`, `QuickFix`. |
 
-**临时文件与缓存**：
+**Temporary files and caching**:
 
-- 默认写入工作区文件夹下的 **`.vue-py-cache/`**，文件名为 `原vue基名-<8位hash>.py`；若无工作区则退回到扩展全局存储目录下的 `vue-py-scripts/`（或系统临时目录策略以代码为准）。
-- 跳转/悬停/补全/大纲等使用的「包在 `setup` 里」的临时文件与「纯格式化用」临时文件 **key 不同**，避免互相覆盖逻辑混乱。
-- 建议在仓库 **`.gitignore`** 中加入：`.vue-py-cache/`。
+- Written by default to **`.vue-py-cache/`** under the workspace folder, with filenames in the format `original-vue-basename-<8-char-hash>.py`. If there is no workspace, falls back to a `vue-py-scripts/` directory under the extension's global storage (or a system temp directory — see code for exact strategy).
+- Temporary files used for navigation / hover / completion / outline ("wrapped in `setup`") use **different cache keys** from those used for formatting only, preventing cross-contamination.
+- It is recommended to add `.vue-py-cache/` to your repository's **`.gitignore`**.
 
-**Volar 虚拟文档**：若当前编辑器 URI 不是直接 `file://…/*.vue`，扩展会尝试从 URI 字符串中解析 `.vue` 路径并在工作区内解析真实文件，以便从 template 侧仍能读取 `<script lang="py">` 做定义查找等。
+**Volar virtual documents**: If the active editor URI is not a direct `file://…/*.vue` URL, the extension attempts to parse the `.vue` path from the URI string and resolve the real file within the workspace, so that Go to Definition and similar features still work from the template side.
 
-### 运行与调试 Vuepy 文件（`package.json` + `extension.js`）
+### Running and Debugging Vuepy Files (`package.json` + `extension.js`)
 
-- **运行命令**：`vuepy.runVueFile`，标题 **▶ Run Vuepy file**。
-- **调试命令**：`vuepy.debugVueFile`，标题 **Debug Vuepy file**。使用 Python 扩展的调试适配器（`type: python`），以 `module: vuepy`、`args: ['run', <当前文件>]` 启动，可在 `.vue` 编译出的 Python / 依赖库中打断点（需在对应 `.py` 中设断点或调整 `justMyCode`）。
-- **菜单**：当 **`vuepy.hasScriptPy`** 为真时，在编辑器标题栏 **Run** 下拉中显示上述两项（`when`: `resourceExtname == .vue && vuepy.hasScriptPy`）。
-- **逻辑**：当前文件为 `.vue` 且包含 `<script lang="py">` 时，在终端中执行：  
-  `<python> -m vuepy run <当前文件绝对路径>`  
-  其中解释器优先 **Python 扩展** `getExecutionDetails`，否则 `python.defaultInterpreterPath`，再否则 `python`。**不会**先 `cd` 到工作区目录，也不为新建终端指定 `cwd`，由当前 shell 所在目录决定相对路径行为。
-- **终端复用**：优先复用名称为 **`vuepy`** 的终端；若已关闭则新建。调试启动仍使用 `launch` 里的 `cwd`（工作区根或文件所在目录），便于 Python 解析相对导入。
+- **Run command**: `vuepy.runVueFile`, titled **▶ Run Vuepy file**.
+- **Debug command**: `vuepy.debugVueFile`, titled **Debug Vuepy file**. Uses the Python extension's debug adapter (`type: python`), launched with `module: vuepy` and `args: ['run', <current file>]`. You can set breakpoints in compiled Python or dependency libraries (set breakpoints in the corresponding `.py` file, or adjust `justMyCode`).
+- **Menus**: When **`vuepy.hasScriptPy`** is true, both items appear in the editor title bar **Run** dropdown (`when`: `resourceExtname == .vue && vuepy.hasScriptPy`).
+- **Logic**: When the current file is `.vue` and contains `<script lang="py">`, the following is executed in the terminal:  
+  `<python> -m vuepy run <absolute path to current file>`  
+  The interpreter is resolved in order: **Python extension** `getExecutionDetails` → `python.defaultInterpreterPath` → `python`. The extension does **not** `cd` to the workspace directory, nor does it set a `cwd` for newly created terminals; relative path behavior is determined by the shell's current directory.
+- **Terminal reuse**: Reuses a terminal named **`vuepy`** if one exists; otherwise creates a new one. Debug launches still use the `cwd` from the `launch` config (workspace root or file's directory) to aid Python relative import resolution.
 
-**上下文 `vuepy.hasScriptPy`**：扩展在激活时与切换活动编辑器、当前文档变更时扫描活动 `.vue` 是否含 `<script lang="py">`，动态更新该上下文，从而控制 Run 按钮是否出现。
+**Context `vuepy.hasScriptPy`**: On activation and whenever the active editor or document changes, the extension scans the active `.vue` file for the presence of `<script lang="py">` and dynamically updates this context value, controlling whether the Run button is shown.
 
-### 激活与依赖
+### Activation and Dependencies
 
-- **`activationEvents`**：`onLanguage:vue`（打开 Vue 语言文件时激活）。
-- **`extensionDependencies`**：`ms-python.python`、`Vue.volar`（安装本扩展时会拉取或提示安装 Python 与 Vue - Official）。
+- **`activationEvents`**: `onLanguage:vue` (activated when a Vue language file is opened).
+- **`extensionDependencies`**: `ms-python.python`, `Vue.volar` (installing this extension will pull in or prompt you to install Python and Vue - Official).
 
 ---
 
-## 安装与开发
+## Installation and Development
 
-### 依赖的扩展（会自动安装或提示）
+### Required Extensions (auto-installed or prompted)
 
-| 扩展 ID | 说明 |
-|--------|------|
-| `Vue.volar` | Vue - Official (Volar)，提供 `source.vue` / `text.html.vue` 等基础语法与语言服务 |
-| `ms-python.python` | Python；Pylance 随 Python 扩展提供跳转、悬停、引用、补全、大纲、格式化等 |
+| Extension ID | Description |
+|--------------|-------------|
+| `Vue.volar` | Vue - Official (Volar) — provides base grammars (`source.vue` / `text.html.vue`) and language services |
+| `ms-python.python` | Python — Pylance ships with the Python extension and provides Go to Definition, hover, references, completion, outline, formatting, etc. |
 
-若通过 **从 VSIX 安装** 或复制扩展目录，请确认上述扩展已启用。
+If installing **from VSIX** or by copying the extension directory, make sure the above extensions are enabled.
 
-### 方式一：开发模式（推荐先试）
+### Option 1: Development Mode (Recommended for First Try)
 
-1. 用 Cursor / VS Code **打开本扩展目录**（包含 `package.json`、`extension.js`、`syntaxes/` 的文件夹）。
-2. **F5** 启动 Extension Development Host。
-3. 在新窗口中打开你的 Vuepy 项目，打开含 `<script lang="py">` 或 `<PnMarkdown>` 的 `.vue` 验证高亮与语言功能。
+1. Open the extension directory (the folder containing `package.json`, `extension.js`, and `syntaxes/`) in **Cursor / VS Code**.
+2. Press **F5** to launch the Extension Development Host.
+3. In the new window, open your Vuepy project and open a `.vue` file containing `<script lang="py">` or `<PnMarkdown>` to verify highlighting and language features.
 
-### 方式二：复制到扩展目录
+### Option 2: Copy to Extensions Directory
 
-将整个扩展文件夹复制到用户扩展目录下，例如：
+Copy the entire extension folder to your user extensions directory, e.g.:
 
-- Linux/macOS：`~/.cursor/extensions/vuepy-0.0.1/`（目录内直接可见 `package.json`）
+- Linux / macOS: `~/.cursor/extensions/vuepy-0.0.1/` (`package.json` should be directly visible inside)
 
-重启编辑器后生效。
+Restart the editor to apply.
 
-### 方式三：打包 VSIX
+### Option 3: Package as VSIX
 
-`vsce package` 建议使用 **Node 20+**。
+`vsce package` — **Node 20+** is recommended.
 
 ```bash
 cd /path/to/vs-plugin-vuepy
@@ -113,23 +113,23 @@ npm install -g @vscode/vsce
 vsce package
 ```
 
-在扩展视图中选择 **从 VSIX 安装** 即可。
+Then select **Install from VSIX** in the Extensions view.
 
 ---
 
-## 故障排除
+## Troubleshooting
 
-1. 确认已安装 **Vue - Official** 与 **Python**，当前 `.vue` 的语言模式为 **Vue**。
-2. **Developer: Reload Window** 重载窗口。
-3. 高亮仍异常时，用 **Inspect Editor Tokens and Scopes** 查看光标处 **Scope**；若根 scope 不在 `injectTo` 列表中，可在 `package.json` 的 `contributes.grammars[].injectTo` 与对应 `tmLanguage.json` 的 `injectionSelector` 中按需追加（需与 Volar / 当前 Vue 语法包一致）。
+1. Confirm that **Vue - Official** and **Python** are installed, and that the language mode for the current `.vue` file is **Vue**.
+2. Run **Developer: Reload Window** to reload the window.
+3. If highlighting is still incorrect, use **Inspect Editor Tokens and Scopes** to check the **Scope** at the cursor position. If the root scope is not in the `injectTo` list, add it as needed in `package.json`'s `contributes.grammars[].injectTo` and the corresponding `tmLanguage.json`'s `injectionSelector` (must match Volar / the current Vue syntax package).
 
 ---
 
-## 版本与变更说明（相对早期「仅 py 高亮」版本）
+## Changelog (relative to the early "Python highlighting only" version)
 
-- 扩展包名与入口统一为 **Vuepy**（`vuepy` / `extension.js`），并声明对 **Volar**、**Python** 的硬依赖。
-- **PnMarkdown 语法注入** 增加对 **`text.html.derivative`** 的注入目标；块内支持多种围栏语言与更完整的 Markdown 片段；标签名兼容 `PnMarkdown`、`pn-markdown`、`Markdown`、`markdown`。
-- **语言功能**：在原有跳转/悬停/引用基础上，增加 **补全**、**大纲**、**仅 script 块的格式化**（独立临时文件策略）。
-- **重命名与重构**：新增 **重命名（F2）** 与 **代码重构动作（Extract / Inline / QuickFix）**，均通过 `mapWorkspaceEditToVue` 将临时文件坐标映射回 `.vue`；重命名限 script 内部（template 侧用法不在 Pylance 识别范围内）。
-- **Template ↔ Script**：template 中简单 **转到定义**、**引用** 与 script 符号的联动；兼容 Volar 虚拟 URI 的 **真实 .vue 路径解析**。
-- **运行**：新增 **Run Vuepy file** 命令与标题栏 Run 按钮（仅当存在 `<script lang="py">` 时显示）。
+- Extension package name and entry point unified as **Vuepy** (`vuepy` / `extension.js`); hard dependencies on **Volar** and **Python** declared.
+- **PnMarkdown grammar injection** adds **`text.html.derivative`** as an injection target; blocks now support multiple fenced languages and a more complete set of Markdown constructs; tag names support `PnMarkdown`, `pn-markdown`, `Markdown`, and `markdown`.
+- **Language features**: on top of the original Go to Definition / hover / references, adds **completion**, **outline**, and **script-block-only formatting** (independent temporary file strategy).
+- **Rename and refactor**: new **Rename (F2)** and **Code Refactor Actions (Extract / Inline / QuickFix)**, both using `mapWorkspaceEditToVue` to map temporary-file coordinates back to `.vue`; renaming is limited to the script interior (template usages are outside Pylance's recognition scope).
+- **Template ↔ Script**: simple **Go to Definition** and **Find References** linking between template and script symbols; compatible with **real `.vue` path resolution** for Volar virtual URIs.
+- **Run**: new **Run Vuepy file** command and title bar Run button (only shown when `<script lang="py">` is present).

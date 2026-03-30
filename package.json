@@ -76,7 +76,7 @@
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "icon": "icon.png",
   "main": "extension.js",
   "activationEvents": [
