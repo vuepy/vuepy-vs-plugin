@@ -1,6 +1,6 @@
 # Vuepy (VS Code / Cursor Extension)
 
-Provides Vuepy-related syntax and language features for **Vue SFC (`.vue`) files**: Python highlighting and **Pylance forwarding** for `<script lang="py">`, Markdown highlighting inside `<PnMarkdown>` / `<markdown>` blocks, and run/debug entry points.
+Provides Vuepy-related syntax and language features for **Vue SFC (`.vue`) files**: Python highlighting, **syntax diagnostics**, and **Pylance forwarding** for `<script lang="py">`, Markdown highlighting inside `<PnMarkdown>` / `<markdown>` blocks, and run/debug entry points.
 
 Extension identifiers: `name` = `vuepy`, `publisher` = `vuepy-org`, `displayName` = **Vuepy**.
 
@@ -50,6 +50,7 @@ Inside **`<script lang="py">`** regions, the extension syncs the block's source 
 | **Formatting** | **Format Document** / **Format Selection**: only replaces content **between** `<script lang="py">` and `</script>`; tags, template, and style sections are untouched. Formatting writes the raw block content (not wrapped in `setup()`) to a temporary `.py` file, then calls `vscode.executeFormatDocumentProvider`, avoiding semantic issues that would arise from wrapping the whole block in a function. |
 | **Rename (F2)** | Only active inside the script block. The `prepareRename` phase checks whether the cursor is on a renameable identifier. `provideRenameEdits` forwards the request to Pylance (`vscode.executeDocumentRenameProvider`) and maps the returned `WorkspaceEdit`'s temporary-file coordinates back to the `.vue` file; edits from cross-file refactoring (e.g. other `.py` files) are preserved as-is. **Note**: because the temporary file is isolated, usages in templates are not within Pylance's rename scope — only the script interior is affected. |
 | **Code Refactor Actions** | Inside the script block, maps the current selection to the temporary file and calls `vscode.executeCodeActionProvider`. Maps `WorkspaceEdit` coordinates from Pylance's returned `CodeAction` (Extract Function, Inline Variable, Quick Fix, etc.) back to `.vue`. Supported `CodeActionKind` values: `Refactor`, `RefactorExtract`, `RefactorInline`, `RefactorRewrite`, `QuickFix`. |
+| **Diagnostics** | Opens the temporary `.py` wrapped in `setup()` and maps diagnostics whose source is **Pylance / Pyright** back to `.vue`. See Syntax Diagnostics below. |
 
 **Temporary files and caching**:
 
@@ -58,6 +59,16 @@ Inside **`<script lang="py">`** regions, the extension syncs the block's source 
 - It is recommended to add `.vue-py-cache/` to your repository's **`.gitignore`**.
 
 **Volar virtual documents**: If the active editor URI is not a direct `file://…/*.vue` URL, the extension attempts to parse the `.vue` path from the URI string and resolve the real file within the workspace, so that Go to Definition and similar features still work from the template side.
+
+### Syntax Diagnostics (`extension.js`)
+
+A `.vue` document's language id is `vue`, so Pylance does not check it directly. The extension wraps `<script lang="py">` in `def setup(props, ctx, app):`, writes that to a temporary `.py`, and **opens** it. Pylance analyzes opened files (it excludes `**/.*` by default, but an opened file is still checked). Diagnostics are then mapped back to the current `.vue`. The collection name is `vuepy`; the source, message, and severity stay as Pylance reported them.
+
+- **Mapping**: The extra `setup` line and the 4-space indent on each line are removed. Diagnostics that sit only on `def setup` or the trailing `return locals()` belong to the wrapper and are hidden. For `1a = 1`, Pylance tokenizes the number and the following identifier separately, underlines `a`, and reports `Statements must be separated by newlines or semicolons`.
+- **Scope**: Syntax errors, undefined names, type mismatches, and any other diagnostic whose source is `Pylance` or `Pyright` are mapped. Results from other linters (such as Pylint) stay on the temporary file.
+- **When it runs**: The temporary file is synced about 300ms after a `.vue` file is opened, edited, or focused. Unchanged script content is skipped. Later Pylance updates are copied across as they arrive. Squiggles on the `.vue` file are cleared when the `<script lang="py">` block is removed or the file is closed.
+- **Fallback**: If Pylance has produced no diagnostics about 1.6 seconds after the sync, the extension runs `ast.parse` on the same `setup` source with the current interpreter and reports only the first syntax error, with source `vuepy`. Interpreter resolution matches the run command, then tries `python3` and `python`. A later Pylance result replaces the fallback.
+- **Problems panel**: The temporary `.py` remains a Pylance diagnostic target, so the same error can appear on both the cache file and the `.vue` file. The squiggle in the `.vue` editor is the one to use.
 
 ### Running and Debugging Vuepy Files (`package.json` + `extension.js`)
 
@@ -74,7 +85,7 @@ Inside **`<script lang="py">`** regions, the extension syncs the block's source 
 ### Activation and Dependencies
 
 - **`activationEvents`**: `onLanguage:vue` (activated when a Vue language file is opened).
-- **`extensionDependencies`**: `ms-python.python`, `Vue.volar` (installing this extension will pull in or prompt you to install Python and Vue - Official).
+- **`extensionDependencies`**: `ms-python.python`, `ms-python.vscode-pylance`, `Vue.volar` (installing this extension will pull in or prompt you to install Python, Pylance, and Vue - Official).
 
 ---
 
@@ -85,7 +96,8 @@ Inside **`<script lang="py">`** regions, the extension syncs the block's source 
 | Extension ID | Description |
 |--------------|-------------|
 | `Vue.volar` | Vue - Official (Volar) — provides base grammars (`source.vue` / `text.html.vue`) and language services |
-| `ms-python.python` | Python — Pylance ships with the Python extension and provides Go to Definition, hover, references, completion, outline, formatting, etc. |
+| `ms-python.python` | Python. Run, debug, and the interpreter used by the `ast.parse` syntax fallback go through this extension |
+| `ms-python.vscode-pylance` | Pylance. Go to Definition, hover, references, completion, outline, formatting, and the diagnostics mapped back to `.vue` are forwarded to it. The Python extension's `extensionPack` only installs Pylance alongside Python; it does not stop Pylance from being disabled later |
 
 If installing **from VSIX** or by copying the extension directory, make sure the above extensions are enabled.
 
@@ -93,7 +105,7 @@ If installing **from VSIX** or by copying the extension directory, make sure the
 
 1. Open the extension directory (the folder containing `package.json`, `extension.js`, and `syntaxes/`) in **Cursor / VS Code**.
 2. Press **F5** to launch the Extension Development Host.
-3. In the new window, open your Vuepy project and open a `.vue` file containing `<script lang="py">` or `<PnMarkdown>` to verify highlighting and language features.
+3. In the new window, open your Vuepy project and open a `.vue` file containing `<script lang="py">` or `<PnMarkdown>` to verify highlighting, syntax diagnostics, and language features.
 
 ### Option 2: Copy to Extensions Directory
 
@@ -122,14 +134,16 @@ Then select **Install from VSIX** in the Extensions view.
 1. Confirm that **Vue - Official** and **Python** are installed, and that the language mode for the current `.vue` file is **Vue**.
 2. Run **Developer: Reload Window** to reload the window.
 3. If highlighting is still incorrect, use **Inspect Editor Tokens and Scopes** to check the **Scope** at the cursor position. If the root scope is not in the `injectTo` list, add it as needed in `package.json`'s `contributes.grammars[].injectTo` and the corresponding `tmLanguage.json`'s `injectionSelector` (must match Volar / the current Vue syntax package).
+4. If a syntax squiggle does not appear, confirm that **Pylance** is installed and enabled (`python.languageServer` must not be `None`), then reload the window. When the language server responds, the diagnostic source is `Pylance`. If nothing arrives within about 1.6 seconds, the extension falls back to `ast.parse` and the source becomes `vuepy`.
 
 ---
 
 ## Changelog (relative to the early "Python highlighting only" version)
 
-- Extension package name and entry point unified as **Vuepy** (`vuepy` / `extension.js`); hard dependencies on **Volar** and **Python** declared.
+- Extension package name and entry point unified as **Vuepy** (`vuepy` / `extension.js`); hard dependencies on **Volar**, **Python**, and **Pylance** (`ms-python.vscode-pylance`) declared.
 - **PnMarkdown grammar injection** adds **`text.html.derivative`** as an injection target; blocks now support multiple fenced languages and a more complete set of Markdown constructs; tag names support `PnMarkdown`, `pn-markdown`, `Markdown`, and `markdown`.
 - **Language features**: on top of the original Go to Definition / hover / references, adds **completion**, **outline**, and **script-block-only formatting** (independent temporary file strategy).
 - **Rename and refactor**: new **Rename (F2)** and **Code Refactor Actions (Extract / Inline / QuickFix)**, both using `mapWorkspaceEditToVue` to map temporary-file coordinates back to `.vue`; renaming is limited to the script interior (template usages are outside Pylance's recognition scope).
 - **Template ↔ Script**: simple **Go to Definition** and **Find References** linking between template and script symbols; compatible with **real `.vue` path resolution** for Volar virtual URIs.
 - **Run**: new **Run Vuepy file** command and title bar Run button (only shown when `<script lang="py">` is present).
+- **Syntax diagnostics**: opens the temporary `.py` wrapped in `setup()` and maps Pylance / Pyright diagnostics back to `.vue`, including syntax errors, undefined names, and type errors. If Pylance does not respond, `ast.parse` reports the first syntax error as a fallback.

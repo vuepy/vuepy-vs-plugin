@@ -1,11 +1,13 @@
 /**
  * Vue <script lang="py"> 跳转、悬停、引用：用临时 .py 文件转发给 Pylance（仅 file: 才生效）。
+ * 诊断优先取 Pylance 对临时 .py 的结果并映射回 .vue；Pylance 没有返回时再用 ast.parse。
  */
 function activate(context) {
   const vscode = require('vscode');
   const path = require('path');
   const fs = require('fs');
   const crypto = require('crypto');
+  const { spawn } = require('child_process');
 
   const CACHE_DIR_IN_WORKSPACE = '.vue-py-cache';
   const TEMP_SUBDIR = 'vue-py-scripts';
@@ -13,17 +15,28 @@ function activate(context) {
   // 默认不显示 Run 按钮，等 updateRunButtonContext 检查后再决定
   vscode.commands.executeCommand('setContext', 'vuepy.hasScriptPy', false);
 
-  /** 从 Vue 文档中解析 <script lang="py"> 块：{ content, startLine1Based, startOffset, endOffset } 或 null */
+  /** index 是否落在尚未闭合的 HTML 注释 <!-- ... --> 里 */
+  function isInsideHtmlComment(text, index) {
+    const open = text.lastIndexOf('<!--', index);
+    if (open === -1) return false;
+    const close = text.lastIndexOf('-->', index);
+    return close < open;
+  }
+
+  /** 从 Vue 文档中解析 <script lang="py"> 块：{ content, startLine1Based, startOffset, endOffset } 或 null。跳过 HTML 注释里的示例。 */
   function getScriptPyBlock(text) {
-    const re = /<script\s+[^>]*lang\s*=\s*["']py["'][^>]*>([\s\S]*?)<\/script>/i;
-    const m = text.match(re);
-    if (!m) return null;
-    const content = m[1] || '';
-    const contentStartIndex = m.index + m[0].indexOf('>') + 1;
-    const startLine1Based = text.slice(0, contentStartIndex).split(/\r?\n/).length;
-    const startOffset = contentStartIndex;
-    const endOffset = contentStartIndex + content.length;
-    return { content, startLine1Based, startOffset, endOffset };
+    const re = /<script\s+[^>]*lang\s*=\s*["']py["'][^>]*>([\s\S]*?)<\/script>/gi;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      if (isInsideHtmlComment(text, m.index)) continue;
+      const content = m[1] || '';
+      const contentStartIndex = m.index + m[0].indexOf('>') + 1;
+      const startLine1Based = text.slice(0, contentStartIndex).split(/\r?\n/).length;
+      const startOffset = contentStartIndex;
+      const endOffset = contentStartIndex + content.length;
+      return { content, startLine1Based, startOffset, endOffset };
+    }
+    return null;
   }
 
   /** 判断 position 是否在 script py 块内 */
@@ -264,6 +277,26 @@ function activate(context) {
     return results;
   }
 
+  /** 与运行命令相同的解释器解析：Python 扩展已激活时优先，否则用 defaultInterpreterPath，再否则 python */
+  async function resolvePythonPath(resourceUri) {
+    let pythonPath = 'python';
+    try {
+      const cfg = vscode.workspace.getConfiguration('python', resourceUri);
+      const interpreterPath = cfg.get('defaultInterpreterPath');
+      if (interpreterPath && typeof interpreterPath === 'string' && interpreterPath.trim()) {
+        pythonPath = interpreterPath.trim();
+      }
+    } catch (_) {}
+    try {
+      const pyExt = vscode.extensions.getExtension('ms-python.python');
+      if (pyExt?.isActive && pyExt.exports?.settings?.getExecutionDetails) {
+        const details = await pyExt.exports.settings.getExecutionDetails(resourceUri);
+        if (details?.execCommand?.[0]) pythonPath = details.execCommand[0];
+      }
+    } catch (_) {}
+    return pythonPath;
+  }
+
   /** 解析当前 .vue 的运行上下文；失败时提示并返回 null */
   async function resolveVuepyRunContext(doc) {
     if (doc.languageId !== 'vue' || !doc.uri.fsPath.endsWith('.vue')) {
@@ -277,21 +310,7 @@ function activate(context) {
     const filePath = doc.uri.fsPath;
     const workspaceFolder = vscode.workspace.getWorkspaceFolder(doc.uri);
     const cwd = workspaceFolder ? workspaceFolder.uri.fsPath : path.dirname(filePath);
-    let pythonPath = 'python';
-    try {
-      const cfg = vscode.workspace.getConfiguration('python', doc.uri);
-      const interpreterPath = cfg.get('defaultInterpreterPath');
-      if (interpreterPath && typeof interpreterPath === 'string') {
-        pythonPath = interpreterPath.trim();
-      }
-    } catch (_) {}
-    try {
-      const pyExt = vscode.extensions.getExtension('ms-python.python');
-      if (pyExt?.isActive && pyExt.exports?.settings?.getExecutionDetails) {
-        const details = await pyExt.exports.settings.getExecutionDetails(doc.uri);
-        if (details?.execCommand?.[0]) pythonPath = details.execCommand[0];
-      }
-    } catch (_) {}
+    const pythonPath = await resolvePythonPath(doc.uri);
     return { filePath, cwd, pythonPath, workspaceFolder };
   }
 
@@ -722,6 +741,472 @@ function activate(context) {
       }
     )
   );
+
+  /**
+   * 诊断：把 <script lang="py"> 包进 setup() 写入临时 .py 并打开，让 Pylance 分析。
+   * 来源为 Pylance/Pyright 的诊断映射回 .vue。约 1.6s 没有结果时，用 ast.parse 兜底语法错误。
+   */
+  const SYNTAX_CHECK_PY = [
+    'import ast, json, sys',
+    'src = sys.stdin.read()',
+    'try:',
+    '    ast.parse(src)',
+    'except SyntaxError as e:',
+    '    json.dump({',
+    '        "msg": e.msg or "invalid syntax",',
+    '        "lineno": e.lineno,',
+    '        "offset": e.offset,',
+    '        "end_lineno": getattr(e, "end_lineno", None),',
+    '        "end_offset": getattr(e, "end_offset", None),',
+    '    }, sys.stdout)',
+  ].join('\n');
+
+  const syntaxDiagnostics = vscode.languages.createDiagnosticCollection('vuepy');
+  context.subscriptions.push(syntaxDiagnostics);
+  const syntaxGeneration = new Map();
+  const syntaxCheckedHash = new Map();
+  const syntaxTimers = new Map();
+  /** tempFsPath -> { key, gen, hash, document, block, gotPylance, fallbackTimer } */
+  const pylanceTargets = new Map();
+  const PYLANCE_FALLBACK_MS = 1600;
+  let syntaxPythonPath = { at: 0, path: '' };
+  let warnedNoPython = false;
+
+  function isVueDocument(document) {
+    if (!document || !document.uri) return false;
+    return document.languageId === 'vue' || (document.uri.scheme === 'file' && document.uri.fsPath.endsWith('.vue'));
+  }
+
+  /** 光标落在「数字开头的标识符」上时，把范围扩成整个 token，例如 1a */
+  function matchBadIdent(lineText, caret) {
+    const from = Math.max(0, caret - 32);
+    const slice = lineText.slice(from);
+    const re = /[0-9]+[A-Za-z_][A-Za-z0-9_]*/g;
+    let m;
+    while ((m = re.exec(slice))) {
+      const absStart = from + m.index;
+      const absEnd = absStart + m[0].length;
+      if (caret < absStart || caret >= absEnd) continue;
+      if (/^0[xXoObB]/.test(m[0])) return null;
+      return { start: absStart, end: absEnd, token: m[0] };
+    }
+    return null;
+  }
+
+  function formatSyntaxMessage(pyMsg, token) {
+    const badIdentMsg = pyMsg === 'invalid syntax' || pyMsg === 'invalid decimal literal';
+    if (badIdentMsg && token && /^[0-9]+[A-Za-z_][A-Za-z0-9_]*$/.test(token) && !/^0[xXoObB]/.test(token) && !/^[0-9]+[eE]/.test(token)) {
+      return `语法错误: "${token}" 不是合法标识符，名字不能以数字开头`;
+    }
+    const known = {
+      'invalid syntax': '语法错误',
+      'invalid decimal literal': '语法错误: 无效的数字字面量',
+      'invalid binary literal': '语法错误: 无效的二进制字面量',
+      'invalid octal literal': '语法错误: 无效的八进制字面量',
+      'invalid hexadecimal literal': '语法错误: 无效的十六进制字面量',
+      'unexpected indent': '缩进错误: 意外的缩进',
+      'unindent does not match any outer indentation level': '缩进错误: 缩进与外层不一致',
+      'unexpected EOF while parsing': '语法错误: 文件意外结束，请检查括号或引号是否闭合',
+      'unexpected character after line continuation character': '语法错误: 续行符后有多余字符',
+      'EOL while scanning string literal': '语法错误: 字符串未结束',
+      'unterminated string literal': '语法错误: 字符串未结束',
+      'unterminated triple-quoted string literal': '语法错误: 三引号字符串未结束',
+      'cannot assign to literal': '语法错误: 不能给字面量赋值',
+    };
+    if (pyMsg && known[pyMsg]) return known[pyMsg];
+    return pyMsg ? `语法错误: ${pyMsg}` : '语法错误';
+  }
+
+  function clampVueRange(document, startLine, startChar, endLine, endChar) {
+    const maxLine = Math.max(0, document.lineCount - 1);
+    let sLine = Math.min(maxLine, Math.max(0, startLine));
+    let eLine = Math.min(maxLine, Math.max(0, endLine));
+    if (eLine < sLine) eLine = sLine;
+    const sLen = document.lineAt(sLine).text.length;
+    const eLen = document.lineAt(eLine).text.length;
+    const sChar = Math.min(sLen, Math.max(0, startChar));
+    let eChar = Math.min(eLen, Math.max(0, endChar));
+    if (sLine === eLine && eChar <= sChar) eChar = Math.min(eLen, sChar + 1);
+    return new vscode.Range(sLine, sChar, eLine, eChar);
+  }
+
+  function syntaxErrorToDiagnostic(document, block, wrapped, err) {
+    if (!err || !err.lineno) return null;
+    const wrappedLines = wrapped.split(/\r?\n/);
+    if (!wrappedLines.length) return null;
+    let tempLine0 = err.lineno - 1;
+    if (tempLine0 < 0) tempLine0 = 0;
+    if (tempLine0 >= wrappedLines.length) tempLine0 = wrappedLines.length - 1;
+    const lineText = wrappedLines[tempLine0] || '';
+    let tempStart = Math.max(0, (err.offset || 1) - 1);
+    let tempEndLine0 = tempLine0;
+    let tempEnd = tempStart + 1;
+    const hasEnd = err.end_lineno != null && err.end_offset != null;
+    if (hasEnd) {
+      tempEndLine0 = Math.min(wrappedLines.length - 1, Math.max(0, err.end_lineno - 1));
+      tempEnd = Math.max(0, err.end_offset - 1);
+    }
+    if (tempEndLine0 === tempLine0 && tempEnd <= tempStart) tempEnd = tempStart + 1;
+
+    let token = '';
+    if (tempEndLine0 === tempLine0) {
+      const bad = matchBadIdent(lineText, Math.min(tempStart, Math.max(0, lineText.length - 1)));
+      if (bad) {
+        tempStart = bad.start;
+        tempEnd = bad.end;
+        token = bad.token;
+      } else if (!hasEnd) {
+        let s = Math.min(tempStart, lineText.length);
+        let e = Math.min(lineText.length, Math.max(s + 1, tempEnd));
+        while (s > 0 && /[A-Za-z0-9_]/.test(lineText.charAt(s - 1))) s--;
+        while (e < lineText.length && /[A-Za-z0-9_]/.test(lineText.charAt(e))) e++;
+        if (e > s) {
+          tempStart = s;
+          tempEnd = e;
+        }
+        token = lineText.slice(tempStart, tempEnd).trim();
+      } else {
+        token = lineText.slice(tempStart, tempEnd).trim();
+      }
+    }
+
+    const range = clampVueRange(
+      document,
+      tempLineToVueLine(block, tempLine0),
+      tempCharToVueChar(tempLine0, tempStart),
+      tempLineToVueLine(block, tempEndLine0),
+      tempCharToVueChar(tempEndLine0, tempEnd)
+    );
+    const diag = new vscode.Diagnostic(range, formatSyntaxMessage(err.msg, token), vscode.DiagnosticSeverity.Error);
+    diag.source = 'vuepy';
+    return diag;
+  }
+
+  function checkPythonSyntax(pythonPath, source) {
+    return new Promise((resolve) => {
+      let child;
+      try {
+        child = spawn(pythonPath, ['-c', SYNTAX_CHECK_PY], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: Object.assign({}, process.env, {
+            PYTHONIOENCODING: 'utf-8',
+            PYTHONDONTWRITEBYTECODE: '1',
+          }),
+        });
+      } catch (_) {
+        resolve({ spawnError: true });
+        return;
+      }
+      let stdout = '';
+      let settled = false;
+      const finish = (val) => {
+        if (settled) return;
+        settled = true;
+        resolve(val);
+      };
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch (_) {}
+        finish({ spawnError: true });
+      }, 5000);
+      child.stdout.on('data', (d) => { stdout += d.toString('utf8'); });
+      child.stdin.on('error', () => {});
+      child.on('error', () => {
+        clearTimeout(timer);
+        finish({ spawnError: true });
+      });
+      child.on('close', (code) => {
+        clearTimeout(timer);
+        const out = stdout.trim();
+        if (!out) {
+          finish(code === 0 ? { spawnError: false, error: null } : { spawnError: true });
+          return;
+        }
+        try {
+          finish({ spawnError: false, error: JSON.parse(out) });
+        } catch (_) {
+          finish({ spawnError: true });
+        }
+      });
+      try {
+        child.stdin.write(source);
+        child.stdin.end();
+      } catch (_) {
+        finish({ spawnError: true });
+      }
+    });
+  }
+
+  function isPylanceDiagnostic(diag) {
+    const src = String(diag && diag.source || '').toLowerCase();
+    return src === 'pylance' || src === 'pyright';
+  }
+
+  function readPylanceDiagnostics(tempUri) {
+    try {
+      return vscode.languages.getDiagnostics(tempUri).filter(isPylanceDiagnostic);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /** 包装行（def setup / return locals）上的诊断不属于用户脚本 */
+  function mapPylanceDiagnostic(document, block, tempFsPath, diag) {
+    if (!diag || !diag.range) return null;
+    const contentLineCount = block.content.split(/\r?\n/).length;
+    const startL = diag.range.start.line;
+    const endL = diag.range.end.line;
+    if (endL < 1 || startL > contentLineCount) return null;
+    const vueRange = tempRangeToVueRange(block, diag.range);
+    const range = clampVueRange(
+      document,
+      vueRange.start.line,
+      vueRange.start.character,
+      vueRange.end.line,
+      vueRange.end.character
+    );
+    const mapped = new vscode.Diagnostic(range, diag.message, diag.severity);
+    mapped.source = diag.source || 'Pylance';
+    if (diag.code !== undefined) mapped.code = diag.code;
+    if (diag.tags) mapped.tags = diag.tags.slice();
+    if (Array.isArray(diag.relatedInformation)) {
+      mapped.relatedInformation = diag.relatedInformation.map((info) => {
+        const loc = info && info.location;
+        if (loc && loc.uri && loc.uri.fsPath === tempFsPath && loc.range) {
+          const rel = tempRangeToVueRange(block, loc.range);
+          const clamped = clampVueRange(
+            document,
+            rel.start.line,
+            rel.start.character,
+            rel.end.line,
+            rel.end.character
+          );
+          return new vscode.DiagnosticRelatedInformation(
+            new vscode.Location(document.uri, clamped),
+            info.message
+          );
+        }
+        return info;
+      });
+    }
+    return mapped;
+  }
+
+  function publishPylanceDiagnostics(document, block, tempFsPath, diags) {
+    const mapped = [];
+    for (const diag of diags) {
+      const one = mapPylanceDiagnostic(document, block, tempFsPath, diag);
+      if (one) mapped.push(one);
+    }
+    if (mapped.length) syntaxDiagnostics.set(document.uri, mapped);
+    else syntaxDiagnostics.delete(document.uri);
+  }
+
+  /** 打开临时 .py，使 Pylance 收到 didOpen/didChange。内容已一致时不再改文档。 */
+  async function ensureTempPySynced(tempUri, content) {
+    let doc;
+    try {
+      doc = await vscode.workspace.openTextDocument(tempUri);
+    } catch (_) {
+      return { doc: null, alreadySynced: false };
+    }
+    if (doc.getText() === content) return { doc, alreadySynced: true };
+    const edit = new vscode.WorkspaceEdit();
+    const end = doc.lineCount > 0
+      ? doc.lineAt(doc.lineCount - 1).range.end
+      : new vscode.Position(0, 0);
+    edit.replace(tempUri, new vscode.Range(new vscode.Position(0, 0), end), content);
+    try {
+      const applied = await vscode.workspace.applyEdit(edit);
+      if (applied && doc.save) {
+        try { await doc.save(); } catch (_) {}
+      }
+    } catch (_) {}
+    return { doc, alreadySynced: false };
+  }
+
+  function clearPylanceTarget(tempFsPath) {
+    const target = pylanceTargets.get(tempFsPath);
+    if (!target) return;
+    if (target.fallbackTimer) clearTimeout(target.fallbackTimer);
+    pylanceTargets.delete(tempFsPath);
+  }
+
+  function clearPylanceTargetsForKey(key) {
+    for (const tempFsPath of Array.from(pylanceTargets.keys())) {
+      if (pylanceTargets.get(tempFsPath).key === key) clearPylanceTarget(tempFsPath);
+    }
+  }
+
+  function onPylanceDiagnosticsChanged(event) {
+    const uris = event && event.uris ? event.uris : [];
+    for (const uri of uris) {
+      if (!uri || !uri.fsPath) continue;
+      const target = pylanceTargets.get(uri.fsPath);
+      if (!target) continue;
+      if (syntaxGeneration.get(target.key) !== target.gen) continue;
+      const diags = readPylanceDiagnostics(uri);
+      if (!diags.length) {
+        if (target.gotPylance) {
+          syntaxDiagnostics.delete(target.document.uri);
+          syntaxCheckedHash.set(target.key, target.hash);
+        }
+        continue;
+      }
+      target.gotPylance = true;
+      if (target.fallbackTimer) {
+        clearTimeout(target.fallbackTimer);
+        target.fallbackTimer = null;
+      }
+      publishPylanceDiagnostics(target.document, target.block, uri.fsPath, diags);
+      syntaxCheckedHash.set(target.key, target.hash);
+    }
+  }
+
+  async function pythonPathForDiagnostics(resourceUri) {
+    const now = Date.now();
+    if (syntaxPythonPath.path && now - syntaxPythonPath.at < 15000) return syntaxPythonPath.path;
+    const resolved = await resolvePythonPath(resourceUri);
+    syntaxPythonPath = { at: now, path: resolved };
+    return resolved;
+  }
+
+  async function publishAstFallback(document, block, wrapped, key, hash, gen) {
+    if (syntaxGeneration.get(key) !== gen) return;
+    const current = getScriptPyBlock(document.getText());
+    if (!current || crypto.createHash('md5').update(wrapInSetup(current.content)).digest('hex') !== hash) return;
+
+    const primary = await pythonPathForDiagnostics(document.uri);
+    if (syntaxGeneration.get(key) !== gen) return;
+    const candidates = [];
+    for (const py of [primary, 'python3', 'python']) {
+      if (py && candidates.indexOf(py) === -1) candidates.push(py);
+    }
+
+    let parsed = null;
+    let spawnOk = false;
+    for (const py of candidates) {
+      parsed = await checkPythonSyntax(py, wrapped);
+      if (syntaxGeneration.get(key) !== gen) return;
+      if (parsed && parsed.spawnError) continue;
+      spawnOk = true;
+      if (py !== syntaxPythonPath.path) syntaxPythonPath = { at: Date.now(), path: py };
+      break;
+    }
+    if (syntaxGeneration.get(key) !== gen) return;
+    const target = Array.from(pylanceTargets.values()).find((item) => item.key === key && item.gen === gen);
+    if (target && target.gotPylance) return;
+    if (!spawnOk) {
+      if (!warnedNoPython) {
+        warnedNoPython = true;
+        console.warn('[vuepy] 未找到可用的 Python 解释器，无法检查 <script lang="py"> 语法');
+      }
+      return;
+    }
+
+    syntaxCheckedHash.set(key, hash);
+    if (!parsed || !parsed.error) {
+      syntaxDiagnostics.delete(document.uri);
+      return;
+    }
+    const diag = syntaxErrorToDiagnostic(document, block, wrapped, parsed.error);
+    syntaxDiagnostics.set(document.uri, diag ? [diag] : []);
+  }
+
+  async function refreshVueSyntaxDiagnostics(document) {
+    if (!isVueDocument(document)) return;
+    const key = document.uri.toString();
+    const block = getScriptPyBlock(document.getText());
+    if (!block) {
+      syntaxDiagnostics.delete(document.uri);
+      syntaxCheckedHash.delete(key);
+      clearPylanceTargetsForKey(key);
+      return;
+    }
+    const wrapped = wrapInSetup(block.content);
+    const hash = crypto.createHash('md5').update(wrapped).digest('hex');
+    if (syntaxCheckedHash.get(key) === hash) return;
+
+    const gen = (syntaxGeneration.get(key) || 0) + 1;
+    syntaxGeneration.set(key, gen);
+
+    const tempPath = getTempPyPathAndWrite(document.uri, block.content);
+    const tempUri = vscode.Uri.file(tempPath);
+    clearPylanceTarget(tempPath);
+    const target = {
+      key,
+      gen,
+      hash,
+      document,
+      block,
+      gotPylance: false,
+      fallbackTimer: null,
+    };
+    pylanceTargets.set(tempPath, target);
+
+    const synced = await ensureTempPySynced(tempUri, wrapped);
+    if (syntaxGeneration.get(key) !== gen || pylanceTargets.get(tempPath) !== target) return;
+
+    if (synced.alreadySynced) {
+      const existing = readPylanceDiagnostics(tempUri);
+      if (existing.length) {
+        target.gotPylance = true;
+        publishPylanceDiagnostics(document, block, tempPath, existing);
+        syntaxCheckedHash.set(key, hash);
+        return;
+      }
+    }
+
+    target.fallbackTimer = setTimeout(() => {
+      target.fallbackTimer = null;
+      if (pylanceTargets.get(tempPath) !== target) return;
+      if (target.gotPylance) return;
+      publishAstFallback(document, block, wrapped, key, hash, gen);
+    }, PYLANCE_FALLBACK_MS);
+  }
+
+  function scheduleVueSyntaxDiagnostics(document) {
+    if (!isVueDocument(document)) return;
+    const key = document.uri.toString();
+    const prev = syntaxTimers.get(key);
+    if (prev) clearTimeout(prev);
+    syntaxTimers.set(key, setTimeout(() => {
+      syntaxTimers.delete(key);
+      refreshVueSyntaxDiagnostics(document);
+    }, 300));
+  }
+
+  function clearVueSyntaxDiagnostics(document) {
+    if (!document || !document.uri) return;
+    const key = document.uri.toString();
+    const prev = syntaxTimers.get(key);
+    if (prev) clearTimeout(prev);
+    syntaxTimers.delete(key);
+    syntaxCheckedHash.delete(key);
+    syntaxGeneration.set(key, (syntaxGeneration.get(key) || 0) + 1);
+    clearPylanceTargetsForKey(key);
+    syntaxDiagnostics.delete(document.uri);
+  }
+
+  context.subscriptions.push(
+    vscode.languages.onDidChangeDiagnostics(onPylanceDiagnosticsChanged),
+    vscode.workspace.onDidOpenTextDocument(scheduleVueSyntaxDiagnostics),
+    vscode.workspace.onDidChangeTextDocument((e) => scheduleVueSyntaxDiagnostics(e.document)),
+    vscode.workspace.onDidCloseTextDocument(clearVueSyntaxDiagnostics),
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      if (editor) scheduleVueSyntaxDiagnostics(editor.document);
+    }),
+    {
+      dispose() {
+        for (const timer of syntaxTimers.values()) clearTimeout(timer);
+        syntaxTimers.clear();
+        for (const tempFsPath of Array.from(pylanceTargets.keys())) clearPylanceTarget(tempFsPath);
+        for (const key of syntaxGeneration.keys()) {
+          syntaxGeneration.set(key, (syntaxGeneration.get(key) || 0) + 1);
+        }
+      },
+    }
+  );
+  for (const doc of vscode.workspace.textDocuments) scheduleVueSyntaxDiagnostics(doc);
 
   /** 更新 Run 按钮可见性：仅在含 <script lang="py"> 时显示 */
   function updateRunButtonContext() {
