@@ -1,9 +1,14 @@
 {
-  "name": "vuepy",
-  "displayName": "Vuepy",
+  "name": "vuepy-plugin",
+  "displayName": "Vuepy Plugin",
   "description": "Language support for Vuepy",
-  "version": "0.0.1",
-  "publisher": "vuepy-org",
+  "version": "0.0.2",
+  "publisher": "vuepy",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vuepy/vuepy-vs-plugin"
+  },
+  "homepage": "https://vuepy.org",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -74,8 +79,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": ["vuepy", "Vuepy", "Vuepy Plugin"],
+  "author": "XPX",
   "license": "MIT",
   "icon": "icon.png",
   "main": "extension.js",
